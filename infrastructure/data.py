@@ -20,6 +20,128 @@ except ImportError:
     KORNIA_AVAILABLE = False
 
 
+class MixupCutmix:
+    """Mixup and CutMix augmentation applied to batched tensors on GPU.
+    
+    Randomly applies either Mixup or CutMix to a batch.
+    Returns mixed images and soft labels for training.
+    
+    Args:
+        mixup_alpha: Beta distribution parameter for Mixup (0 = disabled)
+        cutmix_alpha: Beta distribution parameter for CutMix (0 = disabled)
+        prob: Probability of applying augmentation
+        num_classes: Number of classes for one-hot encoding
+    """
+    
+    def __init__(self, 
+                 mixup_alpha: float = 0.2,
+                 cutmix_alpha: float = 1.0,
+                 prob: float = 0.5,
+                 num_classes: int = 10):
+        self.mixup_alpha = mixup_alpha
+        self.cutmix_alpha = cutmix_alpha
+        self.prob = prob
+        self.num_classes = num_classes
+    
+    def __call__(self, images: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Apply Mixup or CutMix augmentation.
+        
+        Args:
+            images: Batch of images [B, C, H, W]
+            labels: Batch of labels [B] (integer labels)
+            
+        Returns:
+            Tuple of (mixed_images, soft_labels) where soft_labels is [B, num_classes]
+        """
+        if torch.rand(1).item() > self.prob:
+            # No augmentation - return one-hot labels
+            soft_labels = torch.zeros(labels.size(0), self.num_classes, device=labels.device)
+            soft_labels.scatter_(1, labels.unsqueeze(1), 1.0)
+            return images, soft_labels
+        
+        # Choose Mixup or CutMix
+        use_cutmix = self.cutmix_alpha > 0 and (self.mixup_alpha <= 0 or torch.rand(1).item() > 0.5)
+        
+        if use_cutmix:
+            return self._cutmix(images, labels)
+        else:
+            return self._mixup(images, labels)
+    
+    def _mixup(self, images: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Apply Mixup augmentation."""
+        lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
+        batch_size = images.size(0)
+        
+        # Random permutation for mixing
+        index = torch.randperm(batch_size, device=images.device)
+        
+        # Mix images
+        mixed_images = lam * images + (1 - lam) * images[index]
+        
+        # Create soft labels (handle case where original and shuffled labels are same)
+        soft_labels = torch.zeros(batch_size, self.num_classes, device=labels.device)
+        soft_labels.scatter_add_(1, labels.unsqueeze(1), torch.full((batch_size, 1), lam, device=labels.device))
+        soft_labels.scatter_add_(1, labels[index].unsqueeze(1), torch.full((batch_size, 1), 1 - lam, device=labels.device))
+        
+        return mixed_images, soft_labels
+    
+    def _cutmix(self, images: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Apply CutMix augmentation."""
+        lam = np.random.beta(self.cutmix_alpha, self.cutmix_alpha)
+        batch_size = images.size(0)
+        _, _, H, W = images.shape
+        
+        # Random permutation for mixing
+        index = torch.randperm(batch_size, device=images.device)
+        
+        # Get random bounding box
+        cut_rat = np.sqrt(1.0 - lam)
+        cut_w = int(W * cut_rat)
+        cut_h = int(H * cut_rat)
+        
+        cx = np.random.randint(W)
+        cy = np.random.randint(H)
+        
+        bbx1 = np.clip(cx - cut_w // 2, 0, W)
+        bby1 = np.clip(cy - cut_h // 2, 0, H)
+        bbx2 = np.clip(cx + cut_w // 2, 0, W)
+        bby2 = np.clip(cy + cut_h // 2, 0, H)
+        
+        # Mix images (cut and paste)
+        mixed_images = images.clone()
+        mixed_images[:, :, bby1:bby2, bbx1:bbx2] = images[index, :, bby1:bby2, bbx1:bbx2]
+        
+        # Adjust lambda based on actual box area
+        lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (W * H))
+        
+        # Create soft labels (handle case where original and shuffled labels are same)
+        soft_labels = torch.zeros(batch_size, self.num_classes, device=labels.device)
+        soft_labels.scatter_add_(1, labels.unsqueeze(1), torch.full((batch_size, 1), lam, device=labels.device))
+        soft_labels.scatter_add_(1, labels[index].unsqueeze(1), torch.full((batch_size, 1), 1 - lam, device=labels.device))
+        
+        return mixed_images, soft_labels
+
+
+def get_mixup_cutmix(mixup_alpha: float = 0.2, 
+                     cutmix_alpha: float = 1.0,
+                     prob: float = 0.5,
+                     num_classes: int = 10) -> Optional[MixupCutmix]:
+    """Get Mixup/CutMix augmentation module.
+    
+    Args:
+        mixup_alpha: Mixup alpha (0 to disable)
+        cutmix_alpha: CutMix alpha (0 to disable)
+        prob: Probability of applying
+        num_classes: Number of classes
+        
+    Returns:
+        MixupCutmix instance or None if both disabled
+    """
+    if mixup_alpha <= 0 and cutmix_alpha <= 0:
+        return None
+    return MixupCutmix(mixup_alpha, cutmix_alpha, prob, num_classes)
+
+
 class GPUAugmentation(nn.Module):
     """GPU-accelerated augmentation using Kornia.
     
@@ -256,7 +378,8 @@ def create_dataloaders(
     pin_memory: bool = True,
     augmentation_strength: str = 'light',
     use_class_weights: bool = True,
-    seed: int = 42
+    seed: int = 42,
+    img_size: int = 224
 ) -> Tuple[DataLoader, DataLoader, Dict]:
     """Create train and validation dataloaders with stratified split.
     
@@ -269,6 +392,7 @@ def create_dataloaders(
         augmentation_strength: Augmentation strength for training
         use_class_weights: Whether to use weighted sampling for training
         seed: Random seed for reproducibility
+        img_size: Input image size (default: 224)
         
     Returns:
         Tuple of (train_loader, val_loader, info_dict)
@@ -276,7 +400,7 @@ def create_dataloaders(
     # Create full dataset with validation transform to get labels
     full_dataset = SkinDiseaseDataset(
         data_root,
-        transform=get_val_transform()
+        transform=get_val_transform(img_size=img_size)
     )
     
     # Get labels and class info
@@ -295,14 +419,14 @@ def create_dataloaders(
     # Create train dataset with augmentation
     train_dataset = SkinDiseaseDataset(
         data_root,
-        transform=get_train_transform(augmentation_strength=augmentation_strength),
+        transform=get_train_transform(img_size=img_size, augmentation_strength=augmentation_strength),
         class_to_idx=full_dataset.class_to_idx
     )
     
     # Create val dataset
     val_dataset = SkinDiseaseDataset(
         data_root,
-        transform=get_val_transform(),
+        transform=get_val_transform(img_size=img_size),
         class_to_idx=full_dataset.class_to_idx
     )
     

@@ -69,6 +69,16 @@ def train_on_h100(
     run_name: Optional[str] = None,
     early_stopping_patience: int = 10,
     grad_clip: float = 1.0,
+    # New options
+    scheduler_type: str = "plateau",  # 'plateau', 'cosine', 'cosine_warmup'
+    warmup_epochs: int = 0,
+    label_smoothing: float = 0.0,
+    hard_loss_type: str = "ce",  # 'ce' or 'focal'
+    focal_gamma: float = 2.0,
+    use_mixup: bool = False,
+    mixup_alpha: float = 0.2,
+    cutmix_alpha: float = 1.0,
+    img_size: int = 224,
 ):
     """Train knowledge distillation model on H100 GPU with optimizations."""
     import torch
@@ -82,9 +92,9 @@ def train_on_h100(
     sys.path.insert(0, "/root/code")
     
     from models import get_student_model, get_model_info
-    from infrastructure.data import create_dataloaders, get_gpu_augmentation
+    from infrastructure.data import create_dataloaders, get_gpu_augmentation, get_mixup_cutmix
     from infrastructure.distillation import get_distillation_loss
-    from infrastructure.training import train_with_distillation, save_torchscript
+    from infrastructure.training import train_with_distillation, save_torchscript, create_scheduler
     
     # Setup device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -135,6 +145,15 @@ def train_on_h100(
         'train_split': train_split,
         'early_stopping_patience': early_stopping_patience,
         'grad_clip': grad_clip,
+        'scheduler_type': scheduler_type,
+        'warmup_epochs': warmup_epochs,
+        'label_smoothing': label_smoothing,
+        'hard_loss_type': hard_loss_type,
+        'focal_gamma': focal_gamma,
+        'use_mixup': use_mixup,
+        'mixup_alpha': mixup_alpha,
+        'cutmix_alpha': cutmix_alpha,
+        'img_size': img_size,
         'timestamp': datetime.now().isoformat(),
     }
     
@@ -160,7 +179,8 @@ def train_on_h100(
         pin_memory=True,
         augmentation_strength=augmentation_strength,
         use_class_weights=use_class_weights,
-        seed=42
+        seed=42,
+        img_size=img_size
     )
     
     print(f"✓ Data loaded:")
@@ -252,10 +272,17 @@ def train_on_h100(
         temperature=temperature,
         alpha=alpha,
         use_hard_loss=True,
-        class_weights=loss_class_weights
+        class_weights=loss_class_weights,
+        label_smoothing=label_smoothing,
+        hard_loss_type=hard_loss_type,
+        focal_gamma=focal_gamma
     )
     if use_weighted_hard_loss:
         print(f"✓ Class-weighted hard loss enabled")
+    if label_smoothing > 0:
+        print(f"✓ Label smoothing: {label_smoothing}")
+    if hard_loss_type == 'focal':
+        print(f"✓ Focal loss enabled (gamma={focal_gamma})")
     print(f"✓ Distillation loss created:")
     print(f"  Method: logit")
     print(f"  Temperature: {temperature}")
@@ -268,19 +295,35 @@ def train_on_h100(
         weight_decay=weight_decay
     )
     
-    # Create scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='min',
+    # Create scheduler with optional warmup
+    scheduler, warmup_fn = create_scheduler(
+        optimizer=optimizer,
+        scheduler_type=scheduler_type,
+        num_epochs=epochs,
+        warmup_epochs=warmup_epochs,
         factor=0.5,
         patience=5,
-        min_lr=0.00001
+        min_lr=1e-6
     )
+    print(f"✓ Scheduler: {scheduler_type}" + (f" with {warmup_epochs}-epoch warmup" if warmup_epochs > 0 else ""))
     
     # Create GPU augmentation (faster than CPU augmentation)
     gpu_aug = get_gpu_augmentation(augmentation_strength)
     if gpu_aug is not None:
-        print(f"✓ GPU augmentation (Kornia) enabled: {augmentation_strength}\n")
+        print(f"✓ GPU augmentation (Kornia) enabled: {augmentation_strength}")
+    
+    # Create Mixup/CutMix if enabled
+    mixup_cutmix = None
+    if use_mixup:
+        mixup_cutmix = get_mixup_cutmix(
+            mixup_alpha=mixup_alpha,
+            cutmix_alpha=cutmix_alpha,
+            prob=0.5,
+            num_classes=10
+        )
+        if mixup_cutmix is not None:
+            print(f"✓ Mixup/CutMix enabled (mixup_alpha={mixup_alpha}, cutmix_alpha={cutmix_alpha})")
+    print()
     
     # Train model
     print(f"{'='*80}")
@@ -302,7 +345,9 @@ def train_on_h100(
         run_name=run_name,
         grad_clip=grad_clip,
         save_best_only=True,
-        gpu_augmentation=gpu_aug
+        gpu_augmentation=gpu_aug,
+        mixup_cutmix=mixup_cutmix,
+        warmup_fn=warmup_fn
     )
     
     print(f"\n{'='*80}")
@@ -407,6 +452,16 @@ def main(
     run_name: Optional[str] = None,
     early_stopping_patience: int = 10,
     grad_clip: float = 1.0,
+    # New options
+    scheduler_type: str = "plateau",
+    warmup_epochs: int = 0,
+    label_smoothing: float = 0.0,
+    hard_loss_type: str = "ce",
+    focal_gamma: float = 2.0,
+    use_mixup: bool = False,
+    mixup_alpha: float = 0.2,
+    cutmix_alpha: float = 1.0,
+    img_size: int = 224,
 ):
     """Main entry point for Modal training."""
     print(f"\n{'='*80}")
@@ -430,6 +485,15 @@ def main(
         run_name=run_name,
         early_stopping_patience=early_stopping_patience,
         grad_clip=grad_clip,
+        scheduler_type=scheduler_type,
+        warmup_epochs=warmup_epochs,
+        label_smoothing=label_smoothing,
+        hard_loss_type=hard_loss_type,
+        focal_gamma=focal_gamma,
+        use_mixup=use_mixup,
+        mixup_alpha=mixup_alpha,
+        cutmix_alpha=cutmix_alpha,
+        img_size=img_size,
     )
     
     print("\n" + "="*80)

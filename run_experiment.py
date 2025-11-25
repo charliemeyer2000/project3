@@ -39,7 +39,7 @@ DB_PATH = "experiments.db"
 def run_modal_training(args) -> str:
     """Run training on Modal and return run name."""
     logger.info("="*80)
-    logger.info("Step 1/4: Training on Modal A100")
+    logger.info("Step 1/4: Training on Modal H100")
     logger.info("="*80)
     
     # Build Modal command
@@ -53,10 +53,21 @@ def run_modal_training(args) -> str:
         "--temperature", str(args.temperature),
         "--alpha", str(args.alpha),
         "--augmentation-strength", args.augmentation_strength,
+        "--scheduler-type", args.scheduler_type,
+        "--warmup-epochs", str(args.warmup_epochs),
+        "--label-smoothing", str(args.label_smoothing),
+        "--hard-loss-type", args.hard_loss_type,
+        "--focal-gamma", str(args.focal_gamma),
+        "--mixup-alpha", str(args.mixup_alpha),
+        "--cutmix-alpha", str(args.cutmix_alpha),
+        "--img-size", str(args.img_size),
     ]
     
     if args.use_weighted_hard_loss:
         cmd.append("--use-weighted-hard-loss")
+    
+    if args.use_mixup:
+        cmd.append("--use-mixup")
     
     if args.run_name:
         cmd.extend(["--run-name", args.run_name])
@@ -237,10 +248,18 @@ def create_experiment_in_db(run_name: str, args) -> None:
         'learning_rate': args.learning_rate,
         'weight_decay': args.weight_decay,
         'optimizer': 'Adam',
-        'scheduler': 'ReduceLROnPlateau',
+        'scheduler': args.scheduler_type,
+        'warmup_epochs': args.warmup_epochs,
         'augmentation_strategy': args.augmentation_strength,
         'use_class_weights': True,
         'use_weighted_hard_loss': args.use_weighted_hard_loss,
+        'label_smoothing': args.label_smoothing,
+        'hard_loss_type': args.hard_loss_type,
+        'focal_gamma': args.focal_gamma if args.hard_loss_type == 'focal' else None,
+        'use_mixup': args.use_mixup,
+        'mixup_alpha': args.mixup_alpha if args.use_mixup else None,
+        'cutmix_alpha': args.cutmix_alpha if args.use_mixup else None,
+        'img_size': args.img_size,
         'train_split': 0.9,
         'modal_run': not args.local,
         'gpu_type': 'H100' if not args.local else 'MPS',
@@ -264,7 +283,7 @@ def main():
     # Model configuration
     parser.add_argument("--architecture", default="shufflenet",
                        choices=["shufflenet", "shufflenet_custom", "mobilenet_v2", 
-                               "mobilenet_v3_small", "mobilenet_v3_large"],
+                               "mobilenet_v3_small", "mobilenet_v3_large", "efficientnet_b0"],
                        help="Student architecture")
     parser.add_argument("--width-mult", type=float, default=0.5,
                        help="Width multiplier for model")
@@ -279,11 +298,27 @@ def main():
     parser.add_argument("--weight-decay", type=float, default=0.0001,
                        help="Weight decay")
     
+    # Scheduler configuration
+    parser.add_argument("--scheduler-type", default="plateau",
+                       choices=["plateau", "cosine", "cosine_warmup"],
+                       help="Learning rate scheduler type")
+    parser.add_argument("--warmup-epochs", type=int, default=0,
+                       help="Number of warmup epochs")
+    
     # Distillation configuration
     parser.add_argument("--temperature", type=float, default=4.0,
                        help="Distillation temperature")
     parser.add_argument("--alpha", type=float, default=0.3,
                        help="Weight for hard loss")
+    
+    # Loss configuration
+    parser.add_argument("--label-smoothing", type=float, default=0.0,
+                       help="Label smoothing factor (0.0-0.1 typical)")
+    parser.add_argument("--hard-loss-type", default="ce",
+                       choices=["ce", "focal"],
+                       help="Hard loss type (ce=cross-entropy, focal=focal loss)")
+    parser.add_argument("--focal-gamma", type=float, default=2.0,
+                       help="Focal loss gamma parameter")
     
     # Data configuration
     parser.add_argument("--augmentation-strength", default="light",
@@ -291,6 +326,14 @@ def main():
                        help="Augmentation strength")
     parser.add_argument("--use-weighted-hard-loss", action="store_true",
                        help="Apply class weights to hard loss (for class imbalance)")
+    parser.add_argument("--use-mixup", action="store_true",
+                       help="Enable Mixup/CutMix augmentation")
+    parser.add_argument("--mixup-alpha", type=float, default=0.2,
+                       help="Mixup alpha parameter")
+    parser.add_argument("--cutmix-alpha", type=float, default=1.0,
+                       help="CutMix alpha parameter")
+    parser.add_argument("--img-size", type=int, default=224,
+                       help="Input image size")
     
     # Execution configuration
     parser.add_argument("--run-name", type=str, default=None,
@@ -313,8 +356,16 @@ def main():
     logger.info(f"Epochs: {args.epochs}")
     logger.info(f"Batch size: {args.batch_size}")
     logger.info(f"Learning rate: {args.learning_rate}")
+    logger.info(f"Scheduler: {args.scheduler_type}" + (f" (+{args.warmup_epochs} warmup)" if args.warmup_epochs > 0 else ""))
     logger.info(f"Augmentation: {args.augmentation_strength}")
+    logger.info(f"Hard loss: {args.hard_loss_type}" + (f" (gamma={args.focal_gamma})" if args.hard_loss_type == 'focal' else ""))
+    if args.label_smoothing > 0:
+        logger.info(f"Label smoothing: {args.label_smoothing}")
     logger.info(f"Weighted hard loss: {args.use_weighted_hard_loss}")
+    if args.use_mixup:
+        logger.info(f"Mixup/CutMix: mixup_alpha={args.mixup_alpha}, cutmix_alpha={args.cutmix_alpha}")
+    if args.img_size != 224:
+        logger.info(f"Image size: {args.img_size}")
     logger.info(f"Training: {'Local' if args.local else 'Modal (H100)'}")
     logger.info("="*80 + "\n")
     

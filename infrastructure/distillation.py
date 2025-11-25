@@ -6,6 +6,49 @@ import torch.nn.functional as F
 from typing import Tuple, Optional, Dict
 
 
+class FocalLoss(nn.Module):
+    """Focal loss for handling hard examples and class imbalance.
+    
+    Focal loss down-weights easy examples and focuses on hard ones.
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    
+    Args:
+        alpha: Weighting factor (can be per-class weights)
+        gamma: Focusing parameter (higher = more focus on hard examples)
+        weight: Optional per-class weights tensor
+        reduction: Reduction method ('mean', 'sum', 'none')
+    """
+    
+    def __init__(self, 
+                 gamma: float = 2.0, 
+                 weight: Optional[torch.Tensor] = None,
+                 reduction: str = 'mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.weight = weight
+        self.reduction = reduction
+    
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute focal loss.
+        
+        Args:
+            inputs: Logits [B, num_classes]
+            targets: Ground truth labels [B]
+            
+        Returns:
+            Focal loss value
+        """
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.weight, reduction='none')
+        pt = torch.exp(-ce_loss)  # pt = p if y=1, 1-p otherwise
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
 class DistillationLoss(nn.Module):
     """Knowledge distillation loss following Hinton et al. (2015).
     
@@ -19,18 +62,32 @@ class DistillationLoss(nn.Module):
             Total loss = alpha * hard_loss + (1 - alpha) * soft_loss
         use_hard_loss: Whether to include hard loss component
         class_weights: Optional tensor of class weights for hard loss (handles class imbalance)
+        label_smoothing: Label smoothing factor for CE loss (0.0 = no smoothing)
+        hard_loss_type: Type of hard loss ('ce' or 'focal')
+        focal_gamma: Gamma parameter for focal loss (only used if hard_loss_type='focal')
     """
     
     def __init__(self, temperature: float = 4.0, alpha: float = 0.3, use_hard_loss: bool = True,
-                 class_weights: Optional[torch.Tensor] = None):
+                 class_weights: Optional[torch.Tensor] = None,
+                 label_smoothing: float = 0.0,
+                 hard_loss_type: str = 'ce',
+                 focal_gamma: float = 2.0):
         super().__init__()
         
         self.temperature = temperature
         self.alpha = alpha
         self.use_hard_loss = use_hard_loss
+        self.hard_loss_type = hard_loss_type
         
-        # Hard loss criterion (optionally weighted for class imbalance)
-        self.ce_loss = nn.CrossEntropyLoss(weight=class_weights)
+        # Hard loss criterion
+        if hard_loss_type == 'focal':
+            self.hard_loss = FocalLoss(gamma=focal_gamma, weight=class_weights)
+        else:
+            # Standard cross-entropy with optional label smoothing and class weights
+            self.hard_loss = nn.CrossEntropyLoss(
+                weight=class_weights,
+                label_smoothing=label_smoothing
+            )
     
     def forward(self, 
                 student_logits: torch.Tensor, 
@@ -46,9 +103,9 @@ class DistillationLoss(nn.Module):
         Returns:
             Tuple of (total_loss, loss_dict) where loss_dict contains individual components
         """
-        # Hard loss: standard cross-entropy with ground truth
+        # Hard loss: cross-entropy (or focal loss) with ground truth
         if self.use_hard_loss:
-            hard_loss = self.ce_loss(student_logits, labels)
+            hard_loss = self.hard_loss(student_logits, labels)
         else:
             hard_loss = torch.tensor(0.0, device=student_logits.device)
         

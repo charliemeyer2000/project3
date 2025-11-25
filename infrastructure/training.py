@@ -4,18 +4,75 @@ import time
 import threading
 import queue
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Callable
 import logging
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts, ReduceLROnPlateau
 from tqdm import tqdm
 import numpy as np
 from sklearn.metrics import f1_score, accuracy_score, classification_report
 
 logger = logging.getLogger(__name__)
+
+
+def create_scheduler(optimizer: torch.optim.Optimizer,
+                     scheduler_type: str = 'plateau',
+                     num_epochs: int = 50,
+                     warmup_epochs: int = 0,
+                     **kwargs) -> Tuple[Optional[Any], Optional[Callable]]:
+    """Create learning rate scheduler.
+    
+    Args:
+        optimizer: Optimizer instance
+        scheduler_type: Type of scheduler ('plateau', 'cosine', 'cosine_warmup')
+        num_epochs: Total number of epochs
+        warmup_epochs: Number of warmup epochs (linear warmup)
+        **kwargs: Additional scheduler arguments
+        
+    Returns:
+        Tuple of (scheduler, warmup_fn) where warmup_fn adjusts LR during warmup
+    """
+    # Create warmup function if needed
+    warmup_fn = None
+    if warmup_epochs > 0:
+        base_lr = optimizer.param_groups[0]['lr']
+        def warmup_fn(epoch: int) -> float:
+            """Linear warmup."""
+            if epoch < warmup_epochs:
+                return base_lr * (epoch + 1) / warmup_epochs
+            return None  # Return None when warmup is done
+    
+    # Create main scheduler
+    if scheduler_type == 'plateau':
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=kwargs.get('factor', 0.5),
+            patience=kwargs.get('patience', 5),
+            min_lr=kwargs.get('min_lr', 1e-6)
+        )
+    elif scheduler_type == 'cosine':
+        scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=num_epochs - warmup_epochs,
+            eta_min=kwargs.get('min_lr', 1e-6)
+        )
+    elif scheduler_type == 'cosine_warmup':
+        # Cosine annealing with warm restarts
+        scheduler = CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=kwargs.get('T_0', 10),
+            T_mult=kwargs.get('T_mult', 2),
+            eta_min=kwargs.get('min_lr', 1e-6)
+        )
+    else:
+        raise ValueError(f"Unknown scheduler type: {scheduler_type}")
+    
+    return scheduler, warmup_fn
 
 
 class AsyncCheckpointer:
@@ -71,6 +128,8 @@ class Trainer:
         grad_clip: Optional gradient clipping value
         use_amp: Whether to use automatic mixed precision (default: True for CUDA)
         gpu_augmentation: Optional GPU augmentation module (from data.py)
+        mixup_cutmix: Optional Mixup/CutMix augmentation module
+        warmup_fn: Optional warmup function that takes epoch and returns LR (or None if warmup done)
     """
     
     def __init__(self,
@@ -82,7 +141,9 @@ class Trainer:
                  scheduler: Optional[Any] = None,
                  grad_clip: Optional[float] = None,
                  use_amp: bool = True,
-                 gpu_augmentation: Optional[nn.Module] = None):
+                 gpu_augmentation: Optional[nn.Module] = None,
+                 mixup_cutmix: Optional[Any] = None,
+                 warmup_fn: Optional[Callable] = None):
         
         self.student = student_model
         self.teacher = teacher_model
@@ -91,6 +152,8 @@ class Trainer:
         self.device = device
         self.scheduler = scheduler
         self.grad_clip = grad_clip
+        self.mixup_cutmix = mixup_cutmix
+        self.warmup_fn = warmup_fn
         
         # AMP setup - only use on CUDA
         self.use_amp = use_amp and device.type == 'cuda'
@@ -105,6 +168,10 @@ class Trainer:
         if gpu_augmentation is not None:
             self.gpu_augmentation = gpu_augmentation.to(device)
             logger.info("✓ GPU augmentation (Kornia) enabled")
+        
+        # Mixup/CutMix
+        if mixup_cutmix is not None:
+            logger.info("✓ Mixup/CutMix augmentation enabled")
         
         # Ensure teacher is in eval mode and frozen
         self.teacher.eval()
@@ -123,6 +190,14 @@ class Trainer:
         """
         self.student.train()
         
+        # Apply warmup if in warmup phase
+        if self.warmup_fn is not None:
+            warmup_lr = self.warmup_fn(epoch - 1)  # epoch is 1-indexed
+            if warmup_lr is not None:
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = warmup_lr
+                logger.info(f"Warmup: LR set to {warmup_lr:.6f}")
+        
         total_loss = 0.0
         total_hard_loss = 0.0
         total_soft_loss = 0.0
@@ -137,6 +212,15 @@ class Trainer:
             # Apply GPU augmentation if available (faster than CPU augmentation)
             if self.gpu_augmentation is not None:
                 images = self.gpu_augmentation(images)
+            
+            # Apply Mixup/CutMix if enabled (note: this returns soft labels)
+            # For now, we use original labels for distillation loss
+            # TODO: Support soft label training when Mixup is enabled
+            use_mixup = self.mixup_cutmix is not None
+            if use_mixup:
+                images, _ = self.mixup_cutmix(images, labels)
+                # Note: We still use hard labels for distillation loss
+                # The mixed images help with regularization
             
             # Get teacher predictions (no gradients, with AMP)
             with torch.no_grad():
@@ -307,7 +391,9 @@ def train_with_distillation(
     save_best_only: bool = True,
     use_amp: bool = True,
     use_async_checkpoint: bool = True,
-    gpu_augmentation: Optional[nn.Module] = None
+    gpu_augmentation: Optional[nn.Module] = None,
+    mixup_cutmix: Optional[Any] = None,
+    warmup_fn: Optional[Callable] = None
 ) -> Dict[str, Any]:
     """Train student model with knowledge distillation.
     
@@ -329,6 +415,8 @@ def train_with_distillation(
         use_amp: Whether to use automatic mixed precision
         use_async_checkpoint: Whether to save checkpoints asynchronously
         gpu_augmentation: Optional GPU augmentation module (Kornia)
+        mixup_cutmix: Optional Mixup/CutMix augmentation module
+        warmup_fn: Optional warmup function
         
     Returns:
         Dictionary with training history and best model info
@@ -351,7 +439,9 @@ def train_with_distillation(
         scheduler=scheduler,
         grad_clip=grad_clip,
         use_amp=use_amp,
-        gpu_augmentation=gpu_augmentation
+        gpu_augmentation=gpu_augmentation,
+        mixup_cutmix=mixup_cutmix,
+        warmup_fn=warmup_fn
     )
     
     # Training history

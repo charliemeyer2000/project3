@@ -5,6 +5,7 @@ from typing import Dict, Any
 
 from .shufflenet import get_shufflenet_student, ShuffleNetStudent, CustomShuffleNetStudent
 from .mobilenet import get_mobilenet_student, MobileNetV2Student, MobileNetV3Student
+from .efficientnet import get_efficientnet_student, EfficientNetB0Student
 
 
 def get_student_model(architecture: str, num_classes: int = 10, **kwargs) -> nn.Module:
@@ -12,11 +13,12 @@ def get_student_model(architecture: str, num_classes: int = 10, **kwargs) -> nn.
     
     Args:
         architecture: Model architecture name
-            - 'shufflenet': ShuffleNetV2 (recommended, ~5MB)
+            - 'shufflenet': ShuffleNetV2 (recommended, ~1.5MB)
             - 'shufflenet_custom': ShuffleNetV2 with feature extraction
-            - 'mobilenet_v2': MobileNetV2
-            - 'mobilenet_v3_small': MobileNetV3-Small
+            - 'mobilenet_v2': MobileNetV2 (~14MB)
+            - 'mobilenet_v3_small': MobileNetV3-Small (~10MB)
             - 'mobilenet_v3_large': MobileNetV3-Large
+            - 'efficientnet_b0': EfficientNet-B0 (~21MB, close to limit)
         num_classes: Number of output classes (default: 10)
         **kwargs: Architecture-specific arguments
         
@@ -30,9 +32,8 @@ def get_student_model(architecture: str, num_classes: int = 10, **kwargs) -> nn.
         >>> # MobileNetV2 with width multiplier 0.75
         >>> model = get_student_model('mobilenet_v2', num_classes=10, width_mult=0.75)
         
-        >>> # Custom ShuffleNet with attention
-        >>> model = get_student_model('shufflenet_custom', num_classes=10, 
-        ...                           width_mult=0.5, use_attention=True)
+        >>> # EfficientNet-B0 (highest capacity under 25MB)
+        >>> model = get_student_model('efficientnet_b0', num_classes=10)
     """
     # ShuffleNet variants
     if architecture == 'shufflenet':
@@ -47,6 +48,10 @@ def get_student_model(architecture: str, num_classes: int = 10, **kwargs) -> nn.
         return get_mobilenet_student('v3_small', num_classes, **kwargs)
     elif architecture == 'mobilenet_v3_large':
         return get_mobilenet_student('v3_large', num_classes, **kwargs)
+    
+    # EfficientNet variants
+    elif architecture == 'efficientnet_b0':
+        return get_efficientnet_student('b0', num_classes, **kwargs)
     
     else:
         raise ValueError(f"Unknown architecture: {architecture}")
@@ -86,10 +91,12 @@ __all__ = [
     'get_student_model',
     'get_shufflenet_student',
     'get_mobilenet_student',
+    'get_efficientnet_student',
     'ShuffleNetStudent',
     'CustomShuffleNetStudent',
     'MobileNetV2Student',
     'MobileNetV3Student',
+    'EfficientNetB0Student',
     'count_parameters',
     'estimate_model_size_mb',
     'get_model_info',
