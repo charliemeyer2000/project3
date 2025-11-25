@@ -1,0 +1,23 @@
+# Long training configuration (for best performance)
+
+epochs: 100
+optimizer: AdamW
+learning_rate: 0.0001
+weight_decay: 0.01
+grad_clip: 1.0
+
+scheduler:
+  type: CosineAnnealingWarmRestarts
+  T_0: 10
+  T_mult: 2
+  eta_min: 0.000001
+
+early_stopping:
+  enabled: true
+  patience: 15
+  metric: val_f1_macro
+
+checkpoint:
+  save_best_only: false  # Save all checkpoints for analysis
+  monitor: val_f1_macro
+

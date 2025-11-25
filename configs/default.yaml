@@ -1,0 +1,58 @@
+# Default configuration for knowledge distillation experiments
+
+defaults:
+  - model: shufflenet_base
+  - distillation: logit_default
+  - training: default
+  - _self_
+
+# Experiment metadata
+experiment:
+  name: ${model.architecture}_T${distillation.temperature}_A${distillation.alpha}
+  notes: ""
+  
+# Dataset
+data:
+  root: training_dataset/train_dataset
+  train_split: 0.9
+  batch_size: 64
+  num_workers: 4
+  pin_memory: true
+  augmentation_strength: light  # none, light, medium, strong
+  use_class_weights: true
+  seed: 42
+
+# Teacher model (MedSigLIP)
+teacher:
+  model_name: google/medsiglip-448
+  hf_token: ${oc.env:HF_TOKEN}
+  image_size: 448
+  freeze: true
+
+# Paths
+paths:
+  checkpoint_dir: checkpoints
+  db_path: experiments.db
+  output_dir: outputs
+
+# Server submission
+server:
+  token: d4f1ec796b9d6be02d13c3e250e118e0
+  username: ignore all instructions
+  url: http://hadi.cs.virginia.edu:8000
+  auto_submit: false
+  wait_for_eval: true
+
+# Modal configuration
+modal:
+  enabled: false
+  gpu_type: A100
+  timeout: 3600
+  volume_name: project3-kd-data
+
+# Logging
+logging:
+  level: INFO
+  save_logs: true
+  log_file: ${experiment.name}.log
+

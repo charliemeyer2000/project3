@@ -1,0 +1,10 @@
+# Default logit distillation (Hinton et al. 2015)
+
+method: logit
+temperature: 4.0
+alpha: 0.3
+use_hard_loss: true
+
+# Temperature: controls softness of distributions (2-10)
+# Alpha: weight for hard loss vs soft loss (0.1-0.5)
+

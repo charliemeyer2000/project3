@@ -1,0 +1,98 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+experiments.db
+
+# Logs
+*.log
+logs/
+
+# Checkpoints (large files)
+checkpoints/
+
+# Model weights (but NOT models/ Python code)
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# Dataset (too large for git)
+training_dataset/
+data/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+
+# Hydra outputs
+outputs/
+multirun/
+
+# Analysis outputs
+*.png
+class_distribution.png
+dataset_samples.png
+
+# Temp files
+*.tmp
+*.temp
+.cache/
+*.bak
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Modal
+.modal/
+
+# UV lock file (optional - some prefer to commit this)
+# uv.lock
+
+# Secrets (never commit!)
+*secret*
+*token*
+

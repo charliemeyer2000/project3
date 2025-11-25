@@ -1,0 +1,27 @@
+# Default training configuration
+
+epochs: 50
+optimizer: Adam
+learning_rate: 0.0003
+weight_decay: 0.0001
+grad_clip: 1.0
+
+# Learning rate scheduler
+scheduler:
+  type: ReduceLROnPlateau
+  mode: min
+  factor: 0.5
+  patience: 5
+  min_lr: 0.00001
+
+# Early stopping
+early_stopping:
+  enabled: true
+  patience: 10
+  metric: val_f1_macro
+
+# Checkpointing
+checkpoint:
+  save_best_only: true
+  monitor: val_f1_macro
+

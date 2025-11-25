@@ -1,0 +1,10 @@
+# MobileNetV2 configuration
+
+architecture: mobilenet_v2
+width_mult: 0.75
+pretrained: false
+dropout: 0.2
+num_classes: 10
+
+# Expected model size: ~4-5 MB
+
