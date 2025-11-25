@@ -64,6 +64,7 @@ def train_on_h100(
     alpha: float = 0.3,
     augmentation_strength: str = "light",
     use_class_weights: bool = True,
+    use_weighted_hard_loss: bool = False,  # Apply class weights to hard loss (CE)
     train_split: float = 0.9,
     run_name: Optional[str] = None,
     early_stopping_patience: int = 10,
@@ -130,6 +131,7 @@ def train_on_h100(
         'alpha': alpha,
         'augmentation_strength': augmentation_strength,
         'use_class_weights': use_class_weights,
+        'use_weighted_hard_loss': use_weighted_hard_loss,
         'train_split': train_split,
         'early_stopping_patience': early_stopping_patience,
         'grad_clip': grad_clip,
@@ -243,13 +245,17 @@ def train_on_h100(
     teacher_wrapped = TeacherWrapper(teacher_model).to(device)
     teacher_wrapped.eval()
     
-    # Create distillation loss
+    # Create distillation loss (optionally with class-weighted hard loss)
+    loss_class_weights = info['class_weights'].to(device) if use_weighted_hard_loss else None
     distillation_loss = get_distillation_loss(
         method='logit',
         temperature=temperature,
         alpha=alpha,
-        use_hard_loss=True
+        use_hard_loss=True,
+        class_weights=loss_class_weights
     )
+    if use_weighted_hard_loss:
+        print(f"✓ Class-weighted hard loss enabled")
     print(f"✓ Distillation loss created:")
     print(f"  Method: logit")
     print(f"  Temperature: {temperature}")
@@ -396,6 +402,7 @@ def main(
     alpha: float = 0.3,
     augmentation_strength: str = "light",
     use_class_weights: bool = True,
+    use_weighted_hard_loss: bool = False,
     train_split: float = 0.9,
     run_name: Optional[str] = None,
     early_stopping_patience: int = 10,
@@ -418,6 +425,7 @@ def main(
         alpha=alpha,
         augmentation_strength=augmentation_strength,
         use_class_weights=use_class_weights,
+        use_weighted_hard_loss=use_weighted_hard_loss,
         train_split=train_split,
         run_name=run_name,
         early_stopping_patience=early_stopping_patience,

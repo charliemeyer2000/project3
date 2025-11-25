@@ -55,6 +55,9 @@ def run_modal_training(args) -> str:
         "--augmentation-strength", args.augmentation_strength,
     ]
     
+    if args.use_weighted_hard_loss:
+        cmd.append("--use-weighted-hard-loss")
+    
     if args.run_name:
         cmd.extend(["--run-name", args.run_name])
     
@@ -237,6 +240,7 @@ def create_experiment_in_db(run_name: str, args) -> None:
         'scheduler': 'ReduceLROnPlateau',
         'augmentation_strategy': args.augmentation_strength,
         'use_class_weights': True,
+        'use_weighted_hard_loss': args.use_weighted_hard_loss,
         'train_split': 0.9,
         'modal_run': not args.local,
         'gpu_type': 'H100' if not args.local else 'MPS',
@@ -285,6 +289,8 @@ def main():
     parser.add_argument("--augmentation-strength", default="light",
                        choices=["none", "light", "medium", "strong"],
                        help="Augmentation strength")
+    parser.add_argument("--use-weighted-hard-loss", action="store_true",
+                       help="Apply class weights to hard loss (for class imbalance)")
     
     # Execution configuration
     parser.add_argument("--run-name", type=str, default=None,
@@ -308,6 +314,7 @@ def main():
     logger.info(f"Batch size: {args.batch_size}")
     logger.info(f"Learning rate: {args.learning_rate}")
     logger.info(f"Augmentation: {args.augmentation_strength}")
+    logger.info(f"Weighted hard loss: {args.use_weighted_hard_loss}")
     logger.info(f"Training: {'Local' if args.local else 'Modal (H100)'}")
     logger.info("="*80 + "\n")
     

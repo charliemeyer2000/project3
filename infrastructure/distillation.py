@@ -18,17 +18,19 @@ class DistillationLoss(nn.Module):
         alpha: Weight for hard loss vs soft loss (default: 0.3)
             Total loss = alpha * hard_loss + (1 - alpha) * soft_loss
         use_hard_loss: Whether to include hard loss component
+        class_weights: Optional tensor of class weights for hard loss (handles class imbalance)
     """
     
-    def __init__(self, temperature: float = 4.0, alpha: float = 0.3, use_hard_loss: bool = True):
+    def __init__(self, temperature: float = 4.0, alpha: float = 0.3, use_hard_loss: bool = True,
+                 class_weights: Optional[torch.Tensor] = None):
         super().__init__()
         
         self.temperature = temperature
         self.alpha = alpha
         self.use_hard_loss = use_hard_loss
         
-        # Hard loss criterion
-        self.ce_loss = nn.CrossEntropyLoss()
+        # Hard loss criterion (optionally weighted for class imbalance)
+        self.ce_loss = nn.CrossEntropyLoss(weight=class_weights)
     
     def forward(self, 
                 student_logits: torch.Tensor, 
