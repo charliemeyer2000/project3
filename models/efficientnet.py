@@ -67,13 +67,17 @@ def get_efficientnet_student(variant: str = 'b0',
         variant: 'b0' (only b0 fits under 25MB)
         num_classes: Number of classes
         pretrained: Use ImageNet weights
-        **kwargs: Additional arguments
+        **kwargs: Additional arguments (width_mult is ignored for EfficientNet)
         
     Returns:
         Student model
     """
+    # Filter out kwargs that don't apply to EfficientNet
+    # (e.g., width_mult is for ShuffleNet/MobileNet only)
+    valid_kwargs = {k: v for k, v in kwargs.items() if k in ['dropout']}
+    
     if variant == 'b0':
-        return EfficientNetB0Student(num_classes, pretrained, **kwargs)
+        return EfficientNetB0Student(num_classes, pretrained, **valid_kwargs)
     else:
         raise ValueError(f"Unknown variant: {variant}. Only 'b0' is supported (size constraint).")
 
