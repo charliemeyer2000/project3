@@ -24,74 +24,99 @@ class ServerAPI:
         self.username = username
         self.server_url = server_url.rstrip('/')
     
-    def submit_model(self, model_path: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
-        """Submit a model to the server.
+    def submit_model(self, model_path: str, max_retries: int = 3, 
+                     wait_on_rate_limit: bool = True, 
+                     rate_limit_wait_minutes: int = 16,
+                     max_rate_limit_retries: int = 5) -> Optional[Dict[str, Any]]:
+        """Submit a model to the server with automatic rate limit handling.
         
         Args:
             model_path: Path to TorchScript model (.pt file)
-            max_retries: Maximum number of retry attempts
+            max_retries: Maximum number of retry attempts for network errors
+            wait_on_rate_limit: If True, wait and retry when rate limited
+            rate_limit_wait_minutes: Minutes to wait when rate limited (default: 16)
+            max_rate_limit_retries: Max times to retry after rate limit (default: 5)
             
         Returns:
             Dictionary with submission result or None on failure
         """
         url = f"{self.server_url}/submit"
+        rate_limit_count = 0
         
-        for attempt in range(max_retries):
-            try:
-                with open(model_path, 'rb') as f:
-                    files = {'file': f}
-                    data = {'token': self.token}
-                    
-                    logger.info(f"Submitting model to {url} (attempt {attempt + 1}/{max_retries})...")
-                    response = requests.post(url, data=data, files=files, timeout=60)
-                    
-                    if response.status_code == 200:
-                        result = response.json()
-                        logger.info(f"✅ Submission successful!")
-                        logger.info(f"   Message: {result.get('message', 'No message')}")
-                        return {
-                            'success': True,
-                            'message': result.get('message'),
-                            'attempt': result.get('attempt'),
-                            **result
-                        }
-                    elif response.status_code == 429:
-                        # Rate limit hit
-                        logger.warning(f"⚠️  Rate limit hit. Please wait 15 minutes between submissions.")
+        while rate_limit_count <= max_rate_limit_retries:
+            for attempt in range(max_retries):
+                try:
+                    with open(model_path, 'rb') as f:
+                        files = {'file': f}
+                        data = {'token': self.token}
+                        
+                        logger.info(f"Submitting model to {url} (attempt {attempt + 1}/{max_retries})...")
+                        response = requests.post(url, data=data, files=files, timeout=60)
+                        
+                        if response.status_code == 200:
+                            result = response.json()
+                            logger.info(f"✅ Submission successful!")
+                            logger.info(f"   Message: {result.get('message', 'No message')}")
+                            return {
+                                'success': True,
+                                'message': result.get('message'),
+                                'attempt': result.get('attempt'),
+                                **result
+                            }
+                        elif response.status_code == 429:
+                            # Rate limit hit
+                            rate_limit_count += 1
+                            if wait_on_rate_limit and rate_limit_count <= max_rate_limit_retries:
+                                wait_seconds = rate_limit_wait_minutes * 60
+                                logger.warning(f"⚠️  Rate limit hit (attempt {rate_limit_count}/{max_rate_limit_retries}).")
+                                logger.info(f"⏳ Waiting {rate_limit_wait_minutes} minutes before retrying...")
+                                
+                                # Show countdown every minute
+                                for remaining in range(rate_limit_wait_minutes, 0, -1):
+                                    logger.info(f"   {remaining} minutes remaining...")
+                                    time.sleep(60)
+                                
+                                logger.info(f"🔄 Retrying submission after rate limit wait...")
+                                break  # Break inner loop to retry submission
+                            else:
+                                logger.error(f"❌ Rate limit exceeded max retries ({max_rate_limit_retries})")
+                                return {
+                                    'success': False,
+                                    'error': 'Rate limit exceeded. Max retries reached.',
+                                    'status_code': 429
+                                }
+                        else:
+                            logger.error(f"❌ Submission failed with status {response.status_code}")
+                            logger.error(f"   Response: {response.text}")
+                            
+                            if attempt < max_retries - 1:
+                                wait_time = 2 ** attempt  # Exponential backoff
+                                logger.info(f"Retrying in {wait_time} seconds...")
+                                time.sleep(wait_time)
+                            else:
+                                return {
+                                    'success': False,
+                                    'error': response.text,
+                                    'status_code': response.status_code
+                                }
+                
+                except requests.exceptions.Timeout:
+                    logger.error(f"❌ Request timed out")
+                    if attempt < max_retries - 1:
+                        logger.info(f"Retrying...")
+                        time.sleep(2 ** attempt)
+                except Exception as e:
+                    logger.error(f"❌ Error submitting model: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
+                    else:
                         return {
                             'success': False,
-                            'error': 'Rate limit exceeded. Wait 15 minutes.',
-                            'status_code': 429
+                            'error': str(e)
                         }
-                    else:
-                        logger.error(f"❌ Submission failed with status {response.status_code}")
-                        logger.error(f"   Response: {response.text}")
-                        
-                        if attempt < max_retries - 1:
-                            wait_time = 2 ** attempt  # Exponential backoff
-                            logger.info(f"Retrying in {wait_time} seconds...")
-                            time.sleep(wait_time)
-                        else:
-                            return {
-                                'success': False,
-                                'error': response.text,
-                                'status_code': response.status_code
-                            }
-            
-            except requests.exceptions.Timeout:
-                logger.error(f"❌ Request timed out")
-                if attempt < max_retries - 1:
-                    logger.info(f"Retrying...")
-                    time.sleep(2 ** attempt)
-            except Exception as e:
-                logger.error(f"❌ Error submitting model: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                else:
-                    return {
-                        'success': False,
-                        'error': str(e)
-                    }
+            else:
+                # Inner loop completed without break (no rate limit), exit outer loop
+                break
         
         return None
     

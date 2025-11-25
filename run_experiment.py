@@ -161,15 +161,25 @@ def download_model_from_modal(run_name: str, output_dir: str = "models") -> str:
 
 
 def submit_to_server(model_path: str, run_name: str) -> bool:
-    """Submit model to server."""
+    """Submit model to server with automatic rate limit handling.
+    
+    Will wait and retry if rate limited (up to 5 times, 16 min each).
+    """
     logger.info("="*80)
     logger.info("Step 3/4: Submitting to server")
     logger.info("="*80)
     
     server_api = ServerAPI(TOKEN, USERNAME, SERVER_URL)
     
-    # Submit
-    result = server_api.submit_model(model_path, max_retries=3)
+    # Submit with rate limit resilience
+    # Will automatically wait 16 minutes and retry up to 5 times if rate limited
+    result = server_api.submit_model(
+        model_path, 
+        max_retries=3,
+        wait_on_rate_limit=True,
+        rate_limit_wait_minutes=16,
+        max_rate_limit_retries=5
+    )
     
     if not result or not result.get('success'):
         logger.error(f"❌ Submission failed: {result.get('error') if result else 'Unknown error'}")
