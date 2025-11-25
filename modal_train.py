@@ -79,6 +79,7 @@ def train_on_h100(
     mixup_alpha: float = 0.2,
     cutmix_alpha: float = 1.0,
     img_size: int = 224,
+    pretrained: bool = False,  # Use ImageNet pretrained weights for student
 ):
     """Train knowledge distillation model on H100 GPU with optimizations."""
     import torch
@@ -154,6 +155,7 @@ def train_on_h100(
         'mixup_alpha': mixup_alpha,
         'cutmix_alpha': cutmix_alpha,
         'img_size': img_size,
+        'pretrained': pretrained,
         'timestamp': datetime.now().isoformat(),
     }
     
@@ -195,9 +197,11 @@ def train_on_h100(
         architecture=architecture,
         num_classes=10,
         width_mult=width_mult,
-        pretrained=False,
+        pretrained=pretrained,
         dropout=0.2
     ).to(device)
+    if pretrained:
+        print(f"✓ Using ImageNet pretrained weights")
     
     model_info = get_model_info(student_model)
     print(f"✓ Student model created:")
@@ -462,6 +466,7 @@ def main(
     mixup_alpha: float = 0.2,
     cutmix_alpha: float = 1.0,
     img_size: int = 224,
+    pretrained: bool = False,
 ):
     """Main entry point for Modal training."""
     print(f"\n{'='*80}")
@@ -494,6 +499,7 @@ def main(
         mixup_alpha=mixup_alpha,
         cutmix_alpha=cutmix_alpha,
         img_size=img_size,
+        pretrained=pretrained,
     )
     
     print("\n" + "="*80)

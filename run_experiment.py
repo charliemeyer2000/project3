@@ -69,6 +69,9 @@ def run_modal_training(args) -> str:
     if args.use_mixup:
         cmd.append("--use-mixup")
     
+    if args.pretrained:
+        cmd.append("--pretrained")
+    
     if args.run_name:
         cmd.extend(["--run-name", args.run_name])
     
@@ -260,6 +263,7 @@ def create_experiment_in_db(run_name: str, args) -> None:
         'mixup_alpha': args.mixup_alpha if args.use_mixup else None,
         'cutmix_alpha': args.cutmix_alpha if args.use_mixup else None,
         'img_size': args.img_size,
+        'pretrained': args.pretrained,
         'train_split': 0.9,
         'modal_run': not args.local,
         'gpu_type': 'H100' if not args.local else 'MPS',
@@ -334,6 +338,8 @@ def main():
                        help="CutMix alpha parameter")
     parser.add_argument("--img-size", type=int, default=224,
                        help="Input image size")
+    parser.add_argument("--pretrained", action="store_true",
+                       help="Use ImageNet pretrained weights for student model")
     
     # Execution configuration
     parser.add_argument("--run-name", type=str, default=None,
@@ -366,6 +372,8 @@ def main():
         logger.info(f"Mixup/CutMix: mixup_alpha={args.mixup_alpha}, cutmix_alpha={args.cutmix_alpha}")
     if args.img_size != 224:
         logger.info(f"Image size: {args.img_size}")
+    if args.pretrained:
+        logger.info(f"Pretrained: ImageNet weights")
     logger.info(f"Training: {'Local' if args.local else 'Modal (H100)'}")
     logger.info("="*80 + "\n")
     
