@@ -292,8 +292,8 @@ def train_on_h100(
     print(f"  Temperature: {temperature}")
     print(f"  Alpha: {alpha}\n")
     
-    # Create optimizer
-    optimizer = torch.optim.Adam(
+    # Create optimizer (AdamW has better weight decay handling)
+    optimizer = torch.optim.AdamW(
         student_model.parameters(),
         lr=learning_rate,
         weight_decay=weight_decay
