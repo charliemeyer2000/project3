@@ -83,6 +83,10 @@ def train_on_h100(
     optimizer_type: str = "adamw",  # 'adamw' or 'sgd'
     momentum: float = 0.9,  # For SGD
     dropout: float = 0.2,  # Dropout rate
+    use_trained_teacher_head: bool = False,  # Use pre-trained teacher classifier
+    use_feature_distillation: bool = False,  # Add feature alignment loss
+    feature_loss_weight: float = 0.5,  # Weight for feature loss
+    use_tta: bool = False,  # Export model with TTA (test-time augmentation)
 ):
     """Train knowledge distillation model on H100 GPU with optimizations."""
     import torch
@@ -96,6 +100,7 @@ def train_on_h100(
     sys.path.insert(0, "/root/code")
     
     from models import get_student_model, get_model_info
+    from models.tta_wrapper import wrap_model_with_tta
     from infrastructure.data import create_dataloaders, get_gpu_augmentation, get_mixup_cutmix
     from infrastructure.distillation import get_distillation_loss
     from infrastructure.training import train_with_distillation, save_torchscript, create_scheduler
@@ -162,6 +167,10 @@ def train_on_h100(
         'optimizer_type': optimizer_type,
         'momentum': momentum if optimizer_type == 'sgd' else None,
         'dropout': dropout,
+        'use_trained_teacher_head': use_trained_teacher_head,
+        'use_feature_distillation': use_feature_distillation,
+        'feature_loss_weight': feature_loss_weight,
+        'use_tta': use_tta,
         'timestamp': datetime.now().isoformat(),
     }
     
@@ -242,7 +251,7 @@ def train_on_h100(
     for param in teacher_model.parameters():
         param.requires_grad = False
     
-    # Add classifier head to teacher (fixed random projection for soft targets)
+    # Add classifier head to teacher
     with torch.no_grad():
         sample_images = torch.randn(1, 3, 224, 224).to(device)
         # Resize to 448x448 for MedSigLIP
@@ -253,16 +262,35 @@ def train_on_h100(
         hidden_dim = teacher_features.shape[1]
     
     teacher_model.classifier_head = nn.Linear(hidden_dim, 10).to(device)
-    print(f"✓ Teacher model loaded:")
-    print(f"  Model: google/medsiglip-448")
-    print(f"  Feature dim: {hidden_dim}")
-    print(f"  Classifier: {hidden_dim} -> 10 classes\n")
     
-    # Wrap teacher to handle image resizing
+    # Load trained teacher head if available (CRITICAL: fixes the random noise issue!)
+    if use_trained_teacher_head:
+        teacher_head_path = "/data/teacher_head/medsiglip_classifier.pth"
+        if os.path.exists(teacher_head_path):
+            checkpoint = torch.load(teacher_head_path, map_location=device)
+            teacher_model.classifier_head.load_state_dict(checkpoint['state_dict'])
+            print(f"✓ Teacher model loaded WITH TRAINED HEAD:")
+            print(f"  Model: google/medsiglip-448")
+            print(f"  Feature dim: {hidden_dim}")
+            print(f"  Trained head F1: {checkpoint['best_f1']:.4f}")
+            print(f"  Classifier: {hidden_dim} -> 10 classes (TRAINED)\n")
+        else:
+            print(f"⚠ WARNING: Trained teacher head not found at {teacher_head_path}")
+            print(f"  Run 'modal run train_teacher_head.py' first!")
+            print(f"  Falling back to random head (not recommended)\n")
+    else:
+        print(f"✓ Teacher model loaded:")
+        print(f"  Model: google/medsiglip-448")
+        print(f"  Feature dim: {hidden_dim}")
+        print(f"  Classifier: {hidden_dim} -> 10 classes (RANDOM - soft targets are noise!)")
+        print(f"  💡 TIP: Use --use-trained-teacher-head for better results\n")
+    
+    # Wrap teacher to handle image resizing and optionally return features
     class TeacherWrapper(nn.Module):
-        def __init__(self, teacher):
+        def __init__(self, teacher, return_features=False):
             super().__init__()
             self.teacher = teacher
+            self.return_features = return_features
         
         def forward(self, x):
             # Resize from 224x224 to 448x448 for MedSigLIP
@@ -271,33 +299,75 @@ def train_on_h100(
             )
             features = self.teacher.vision_model(x_448).pooler_output
             logits = self.teacher.classifier_head(features)
+            if self.return_features:
+                return logits, features
             return logits
     
-    teacher_wrapped = TeacherWrapper(teacher_model).to(device)
+    teacher_wrapped = TeacherWrapper(teacher_model, return_features=use_feature_distillation).to(device)
     teacher_wrapped.eval()
+    
+    # Create feature projector if using feature distillation
+    # Projects student features to teacher feature space
+    feature_projector = None
+    if use_feature_distillation:
+        # Get student feature dimension
+        with torch.no_grad():
+            sample_img = torch.randn(1, 3, img_size, img_size).to(device)
+            if hasattr(student_model, 'get_features'):
+                student_feat_dim = student_model.get_features(sample_img).shape[1]
+            else:
+                # Fallback - try to infer from model
+                student_feat_dim = 1280  # EfficientNet-B0 default
+        
+        # Projector: student dim -> teacher dim
+        feature_projector = nn.Sequential(
+            nn.Linear(student_feat_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        ).to(device)
+        print(f"✓ Feature distillation enabled:")
+        print(f"  Student feature dim: {student_feat_dim}")
+        print(f"  Teacher feature dim: {hidden_dim}")
+        print(f"  Feature loss weight: {feature_loss_weight}\n")
     
     # Create distillation loss (optionally with class-weighted hard loss)
     loss_class_weights = info['class_weights'].to(device) if use_weighted_hard_loss else None
-    distillation_loss = get_distillation_loss(
-        method='logit',
-        temperature=temperature,
-        alpha=alpha,
-        use_hard_loss=True,
-        class_weights=loss_class_weights,
-        label_smoothing=label_smoothing,
-        hard_loss_type=hard_loss_type,
-        focal_gamma=focal_gamma
-    )
-    if use_weighted_hard_loss:
-        print(f"✓ Class-weighted hard loss enabled")
-    if label_smoothing > 0:
-        print(f"✓ Label smoothing: {label_smoothing}")
-    if hard_loss_type == 'focal':
-        print(f"✓ Focal loss enabled (gamma={focal_gamma})")
-    print(f"✓ Distillation loss created:")
-    print(f"  Method: logit")
-    print(f"  Temperature: {temperature}")
-    print(f"  Alpha: {alpha}\n")
+    
+    if use_feature_distillation:
+        # Hybrid distillation: logit + feature alignment
+        distillation_loss = get_distillation_loss(
+            method='hybrid',
+            temperature=temperature,
+            alpha=alpha,
+            beta=feature_loss_weight,  # Weight for feature vs soft logit loss
+            feature_loss_type='mse'
+        )
+        print(f"✓ Distillation loss created:")
+        print(f"  Method: hybrid (logit + feature)")
+        print(f"  Temperature: {temperature}")
+        print(f"  Alpha: {alpha} (hard loss weight)")
+        print(f"  Beta: {feature_loss_weight} (feature vs soft weight)\n")
+    else:
+        distillation_loss = get_distillation_loss(
+            method='logit',
+            temperature=temperature,
+            alpha=alpha,
+            use_hard_loss=True,
+            class_weights=loss_class_weights,
+            label_smoothing=label_smoothing,
+            hard_loss_type=hard_loss_type,
+            focal_gamma=focal_gamma
+        )
+        if use_weighted_hard_loss:
+            print(f"✓ Class-weighted hard loss enabled")
+        if label_smoothing > 0:
+            print(f"✓ Label smoothing: {label_smoothing}")
+        if hard_loss_type == 'focal':
+            print(f"✓ Focal loss enabled (gamma={focal_gamma})")
+        print(f"✓ Distillation loss created:")
+        print(f"  Method: logit")
+        print(f"  Temperature: {temperature}")
+        print(f"  Alpha: {alpha}\n")
     
     # Create optimizer
     if optimizer_type == 'sgd':
@@ -371,7 +441,9 @@ def train_on_h100(
         save_best_only=True,
         gpu_augmentation=gpu_aug,
         mixup_cutmix=mixup_cutmix,
-        warmup_fn=warmup_fn
+        warmup_fn=warmup_fn,
+        use_feature_distillation=use_feature_distillation,
+        feature_projector=feature_projector
     )
     
     print(f"\n{'='*80}")
@@ -395,7 +467,7 @@ def train_on_h100(
             num_classes=10,
             width_mult=width_mult,
             pretrained=False,
-            dropout=0.2
+            dropout=dropout
         )
         # Load best weights from checkpoint
         best_checkpoint = torch.load(f'/data/checkpoints/{run_name}/best_model.pth')
@@ -409,6 +481,12 @@ def train_on_h100(
         export_model.load_state_dict(cleaned_state_dict)
     else:
         export_model = student_model
+    
+    # Wrap with TTA if enabled (improves predictions at inference)
+    if use_tta:
+        print("Wrapping model with TTA (horizontal flip)...")
+        export_model = wrap_model_with_tta(export_model, use_hflip=True, use_vflip=False)
+        print("✓ TTA wrapper applied")
     
     torchscript_path = f"{output_dir}/model.pt"
     file_size = save_torchscript(export_model, torchscript_path)
@@ -490,6 +568,10 @@ def main(
     optimizer_type: str = "adamw",
     momentum: float = 0.9,
     dropout: float = 0.2,
+    use_trained_teacher_head: bool = False,
+    use_feature_distillation: bool = False,
+    feature_loss_weight: float = 0.5,
+    use_tta: bool = False,
 ):
     """Main entry point for Modal training."""
     print(f"\n{'='*80}")
@@ -526,6 +608,10 @@ def main(
         optimizer_type=optimizer_type,
         momentum=momentum,
         dropout=dropout,
+        use_trained_teacher_head=use_trained_teacher_head,
+        use_feature_distillation=use_feature_distillation,
+        feature_loss_weight=feature_loss_weight,
+        use_tta=use_tta,
     )
     
     print("\n" + "="*80)

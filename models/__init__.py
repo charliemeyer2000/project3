@@ -6,6 +6,7 @@ from typing import Dict, Any
 from .shufflenet import get_shufflenet_student, ShuffleNetStudent, CustomShuffleNetStudent
 from .mobilenet import get_mobilenet_student, MobileNetV2Student, MobileNetV3Student
 from .efficientnet import get_efficientnet_student, EfficientNetB0Student
+from .tta_wrapper import TTAWrapper, wrap_model_with_tta
 
 
 def get_student_model(architecture: str, num_classes: int = 10, **kwargs) -> nn.Module:
@@ -97,6 +98,8 @@ __all__ = [
     'MobileNetV2Student',
     'MobileNetV3Student',
     'EfficientNetB0Student',
+    'TTAWrapper',
+    'wrap_model_with_tta',
     'count_parameters',
     'estimate_model_size_mb',
     'get_model_info',

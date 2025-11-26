@@ -145,6 +145,8 @@ class Trainer:
         gpu_augmentation: Optional GPU augmentation module (from data.py)
         mixup_cutmix: Optional Mixup/CutMix augmentation module
         warmup_fn: Optional warmup function that takes epoch and returns LR (or None if warmup done)
+        use_feature_distillation: Whether to use feature-based distillation
+        feature_projector: Optional projector for student features (student_dim -> teacher_dim)
     """
     
     def __init__(self,
@@ -158,7 +160,9 @@ class Trainer:
                  use_amp: bool = True,
                  gpu_augmentation: Optional[nn.Module] = None,
                  mixup_cutmix: Optional[Any] = None,
-                 warmup_fn: Optional[Callable] = None):
+                 warmup_fn: Optional[Callable] = None,
+                 use_feature_distillation: bool = False,
+                 feature_projector: Optional[nn.Module] = None):
         
         self.student = student_model
         self.teacher = teacher_model
@@ -169,6 +173,15 @@ class Trainer:
         self.grad_clip = grad_clip
         self.mixup_cutmix = mixup_cutmix
         self.warmup_fn = warmup_fn
+        
+        # Feature distillation
+        self.use_feature_distillation = use_feature_distillation
+        self.feature_projector = feature_projector
+        if feature_projector is not None:
+            self.feature_projector = feature_projector.to(device)
+            # Add projector params to optimizer
+            self.optimizer.add_param_group({'params': feature_projector.parameters()})
+            logger.info("✓ Feature distillation enabled (with projector)")
         
         # AMP setup - only use on CUDA
         self.use_amp = use_amp and device.type == 'cuda'
@@ -238,29 +251,47 @@ class Trainer:
                 # The mixed images help with regularization
             
             # Get teacher predictions (no gradients, with AMP)
+            teacher_features = None
             with torch.no_grad():
                 if self.use_amp:
                     with autocast('cuda', dtype=torch.float16):
-                        teacher_logits = self.teacher(images)
-                        if isinstance(teacher_logits, tuple):
-                            teacher_logits = teacher_logits[0]
+                        teacher_out = self.teacher(images)
+                        if isinstance(teacher_out, tuple):
+                            teacher_logits, teacher_features = teacher_out
+                        else:
+                            teacher_logits = teacher_out
                 else:
-                    teacher_logits = self.teacher(images)
-                    if isinstance(teacher_logits, tuple):
-                        teacher_logits = teacher_logits[0]
+                    teacher_out = self.teacher(images)
+                    if isinstance(teacher_out, tuple):
+                        teacher_logits, teacher_features = teacher_out
+                    else:
+                        teacher_logits = teacher_out
             
             # Forward pass with AMP
             self.optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
             
             if self.use_amp:
                 with autocast('cuda', dtype=torch.float16):
-                    # Get student predictions
+                    # Get student predictions (and features if needed)
+                    student_features = None
+                    if self.use_feature_distillation and hasattr(self.student, 'get_features'):
+                        student_features = self.student.get_features(images)
+                        if self.feature_projector is not None:
+                            student_features = self.feature_projector(student_features)
+                    
                     student_logits = self.student(images)
                     if isinstance(student_logits, tuple):
                         student_logits = student_logits[0]
                     
                     # Compute distillation loss
-                    loss, loss_dict = self.distillation_loss(student_logits, teacher_logits, labels)
+                    if self.use_feature_distillation and student_features is not None:
+                        loss, loss_dict = self.distillation_loss(
+                            student_logits, teacher_logits, 
+                            student_features, teacher_features,
+                            labels
+                        )
+                    else:
+                        loss, loss_dict = self.distillation_loss(student_logits, teacher_logits, labels)
                 
                 # Scaled backward pass
                 self.scaler.scale(loss).backward()
@@ -269,21 +300,38 @@ class Trainer:
                 if self.grad_clip is not None:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.student.parameters(), self.grad_clip)
+                    if self.feature_projector is not None:
+                        torch.nn.utils.clip_grad_norm_(self.feature_projector.parameters(), self.grad_clip)
                 
                 # Optimizer step with scaler
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 # Standard FP32 training
+                student_features = None
+                if self.use_feature_distillation and hasattr(self.student, 'get_features'):
+                    student_features = self.student.get_features(images)
+                    if self.feature_projector is not None:
+                        student_features = self.feature_projector(student_features)
+                
                 student_logits = self.student(images)
                 if isinstance(student_logits, tuple):
                     student_logits = student_logits[0]
                 
-                loss, loss_dict = self.distillation_loss(student_logits, teacher_logits, labels)
+                if self.use_feature_distillation and student_features is not None:
+                    loss, loss_dict = self.distillation_loss(
+                        student_logits, teacher_logits,
+                        student_features, teacher_features,
+                        labels
+                    )
+                else:
+                    loss, loss_dict = self.distillation_loss(student_logits, teacher_logits, labels)
                 loss.backward()
                 
                 if self.grad_clip is not None:
                     torch.nn.utils.clip_grad_norm_(self.student.parameters(), self.grad_clip)
+                    if self.feature_projector is not None:
+                        torch.nn.utils.clip_grad_norm_(self.feature_projector.parameters(), self.grad_clip)
                 
                 self.optimizer.step()
             
@@ -417,7 +465,9 @@ def train_with_distillation(
     use_async_checkpoint: bool = True,
     gpu_augmentation: Optional[nn.Module] = None,
     mixup_cutmix: Optional[Any] = None,
-    warmup_fn: Optional[Callable] = None
+    warmup_fn: Optional[Callable] = None,
+    use_feature_distillation: bool = False,
+    feature_projector: Optional[nn.Module] = None
 ) -> Dict[str, Any]:
     """Train student model with knowledge distillation.
     
@@ -465,7 +515,9 @@ def train_with_distillation(
         use_amp=use_amp,
         gpu_augmentation=gpu_augmentation,
         mixup_cutmix=mixup_cutmix,
-        warmup_fn=warmup_fn
+        warmup_fn=warmup_fn,
+        use_feature_distillation=use_feature_distillation,
+        feature_projector=feature_projector
     )
     
     # Training history

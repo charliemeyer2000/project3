@@ -211,3 +211,4 @@ def get_shufflenet_student(variant: str = 'base',
     else:
         raise ValueError(f"Unknown variant: {variant}")
 
+

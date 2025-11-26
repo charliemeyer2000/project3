@@ -75,6 +75,16 @@ def run_modal_training(args) -> str:
     if args.pretrained:
         cmd.append("--pretrained")
     
+    if args.use_trained_teacher_head:
+        cmd.append("--use-trained-teacher-head")
+    
+    if args.use_feature_distillation:
+        cmd.append("--use-feature-distillation")
+        cmd.extend(["--feature-loss-weight", str(args.feature_loss_weight)])
+    
+    if args.use_tta:
+        cmd.append("--use-tta")
+    
     if args.run_name:
         cmd.extend(["--run-name", args.run_name])
     
@@ -280,6 +290,10 @@ def create_experiment_in_db(run_name: str, args) -> None:
         'train_split': 0.9,
         'modal_run': not args.local,
         'gpu_type': 'H100' if not args.local else 'MPS',
+        'use_trained_teacher_head': args.use_trained_teacher_head,
+        'use_feature_distillation': args.use_feature_distillation,
+        'feature_loss_weight': args.feature_loss_weight if args.use_feature_distillation else None,
+        'use_tta': args.use_tta,
         'notes': args.notes if hasattr(args, 'notes') else ''
     }
     
@@ -363,6 +377,16 @@ def main():
     parser.add_argument("--pretrained", action="store_true",
                        help="Use ImageNet pretrained weights for student model")
     
+    # Advanced distillation options
+    parser.add_argument("--use-trained-teacher-head", action="store_true",
+                       help="Use pre-trained teacher classifier (run train_teacher_head.py first)")
+    parser.add_argument("--use-feature-distillation", action="store_true",
+                       help="Add feature-based distillation loss (L2 alignment)")
+    parser.add_argument("--feature-loss-weight", type=float, default=0.5,
+                       help="Weight for feature loss in hybrid distillation")
+    parser.add_argument("--use-tta", action="store_true",
+                       help="Export model with test-time augmentation (hflip)")
+    
     # Execution configuration
     parser.add_argument("--run-name", type=str, default=None,
                        help="Custom run name")
@@ -398,6 +422,12 @@ def main():
         logger.info(f"Image size: {args.img_size}")
     if args.pretrained:
         logger.info(f"Pretrained: ImageNet weights")
+    if args.use_trained_teacher_head:
+        logger.info(f"🔑 Using TRAINED teacher head (meaningful soft targets!)")
+    if args.use_feature_distillation:
+        logger.info(f"Feature distillation: enabled (weight={args.feature_loss_weight})")
+    if args.use_tta:
+        logger.info(f"TTA: enabled (hflip at inference)")
     logger.info(f"Training: {'Local' if args.local else 'Modal (H100)'}")
     logger.info("="*80 + "\n")
     
