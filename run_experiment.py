@@ -61,6 +61,9 @@ def run_modal_training(args) -> str:
         "--mixup-alpha", str(args.mixup_alpha),
         "--cutmix-alpha", str(args.cutmix_alpha),
         "--img-size", str(args.img_size),
+        "--optimizer-type", args.optimizer_type,
+        "--momentum", str(args.momentum),
+        "--dropout", str(args.dropout),
     ]
     
     if args.use_weighted_hard_loss:
@@ -314,10 +317,19 @@ def main():
     
     # Scheduler configuration
     parser.add_argument("--scheduler-type", default="plateau",
-                       choices=["plateau", "cosine", "cosine_warmup"],
+                       choices=["plateau", "cosine", "cosine_warmup", "onecycle"],
                        help="Learning rate scheduler type")
     parser.add_argument("--warmup-epochs", type=int, default=0,
                        help="Number of warmup epochs")
+    
+    # Optimizer configuration
+    parser.add_argument("--optimizer-type", default="adamw",
+                       choices=["adamw", "sgd"],
+                       help="Optimizer type")
+    parser.add_argument("--momentum", type=float, default=0.9,
+                       help="Momentum for SGD optimizer")
+    parser.add_argument("--dropout", type=float, default=0.2,
+                       help="Dropout rate for student model")
     
     # Distillation configuration
     parser.add_argument("--temperature", type=float, default=4.0,
@@ -372,7 +384,9 @@ def main():
     logger.info(f"Epochs: {args.epochs}")
     logger.info(f"Batch size: {args.batch_size}")
     logger.info(f"Learning rate: {args.learning_rate}")
-    logger.info(f"Scheduler: {args.scheduler_type}" + (f" (+{args.warmup_epochs} warmup)" if args.warmup_epochs > 0 else ""))
+    logger.info(f"Optimizer: {args.optimizer_type}" + (f" (momentum={args.momentum})" if args.optimizer_type == 'sgd' else ""))
+    logger.info(f"Scheduler: {args.scheduler_type}" + (f" (+{args.warmup_epochs} warmup)" if args.warmup_epochs > 0 and args.scheduler_type != 'onecycle' else ""))
+    logger.info(f"Dropout: {args.dropout}")
     logger.info(f"Augmentation: {args.augmentation_strength}")
     logger.info(f"Hard loss: {args.hard_loss_type}" + (f" (gamma={args.focal_gamma})" if args.hard_loss_type == 'focal' else ""))
     if args.label_smoothing > 0:

@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler
-from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts, ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts, ReduceLROnPlateau, OneCycleLR
 from tqdm import tqdm
 import numpy as np
 from sklearn.metrics import f1_score, accuracy_score, classification_report
@@ -23,22 +23,24 @@ def create_scheduler(optimizer: torch.optim.Optimizer,
                      scheduler_type: str = 'plateau',
                      num_epochs: int = 50,
                      warmup_epochs: int = 0,
+                     steps_per_epoch: int = 100,
                      **kwargs) -> Tuple[Optional[Any], Optional[Callable]]:
     """Create learning rate scheduler.
     
     Args:
         optimizer: Optimizer instance
-        scheduler_type: Type of scheduler ('plateau', 'cosine', 'cosine_warmup')
+        scheduler_type: Type of scheduler ('plateau', 'cosine', 'cosine_warmup', 'onecycle')
         num_epochs: Total number of epochs
         warmup_epochs: Number of warmup epochs (linear warmup)
+        steps_per_epoch: Steps per epoch (for OneCycleLR)
         **kwargs: Additional scheduler arguments
         
     Returns:
         Tuple of (scheduler, warmup_fn) where warmup_fn adjusts LR during warmup
     """
-    # Create warmup function if needed
+    # Create warmup function if needed (not used with OneCycleLR which has built-in warmup)
     warmup_fn = None
-    if warmup_epochs > 0:
+    if warmup_epochs > 0 and scheduler_type != 'onecycle':
         base_lr = optimizer.param_groups[0]['lr']
         def warmup_fn(epoch: int) -> float:
             """Linear warmup."""
@@ -68,6 +70,19 @@ def create_scheduler(optimizer: torch.optim.Optimizer,
             T_0=kwargs.get('T_0', 10),
             T_mult=kwargs.get('T_mult', 2),
             eta_min=kwargs.get('min_lr', 1e-6)
+        )
+    elif scheduler_type == 'onecycle':
+        # OneCycleLR - very effective, includes built-in warmup
+        max_lr = optimizer.param_groups[0]['lr']
+        scheduler = OneCycleLR(
+            optimizer,
+            max_lr=max_lr,
+            epochs=num_epochs,
+            steps_per_epoch=steps_per_epoch,
+            pct_start=0.3,  # 30% warmup
+            anneal_strategy='cos',
+            div_factor=25.0,  # initial_lr = max_lr / 25
+            final_div_factor=10000.0  # min_lr = initial_lr / 10000
         )
     else:
         raise ValueError(f"Unknown scheduler type: {scheduler_type}")
@@ -272,6 +287,10 @@ class Trainer:
                 
                 self.optimizer.step()
             
+            # Step OneCycleLR scheduler (per-batch)
+            if self.scheduler is not None and isinstance(self.scheduler, OneCycleLR):
+                self.scheduler.step()
+            
             # Accumulate losses
             total_loss += loss.item()
             total_hard_loss += loss_dict['hard_loss'].item()
@@ -361,13 +380,18 @@ class Trainer:
         }
     
     def step_scheduler(self, metric: Optional[float] = None):
-        """Step the learning rate scheduler.
+        """Step the learning rate scheduler (for epoch-based schedulers).
         
         Args:
             metric: Metric for ReduceLROnPlateau scheduler
+        
+        Note: OneCycleLR is stepped per-batch in train_epoch, not here.
         """
         if self.scheduler is not None:
-            if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            # OneCycleLR is stepped per-batch in train_epoch
+            if isinstance(self.scheduler, OneCycleLR):
+                pass  # Already stepped in train_epoch
+            elif isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 if metric is not None:
                     self.scheduler.step(metric)
             else:

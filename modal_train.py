@@ -70,7 +70,7 @@ def train_on_h100(
     early_stopping_patience: int = 10,
     grad_clip: float = 1.0,
     # New options
-    scheduler_type: str = "plateau",  # 'plateau', 'cosine', 'cosine_warmup'
+    scheduler_type: str = "plateau",  # 'plateau', 'cosine', 'cosine_warmup', 'onecycle'
     warmup_epochs: int = 0,
     label_smoothing: float = 0.0,
     hard_loss_type: str = "ce",  # 'ce' or 'focal'
@@ -80,6 +80,9 @@ def train_on_h100(
     cutmix_alpha: float = 1.0,
     img_size: int = 224,
     pretrained: bool = False,  # Use ImageNet pretrained weights for student
+    optimizer_type: str = "adamw",  # 'adamw' or 'sgd'
+    momentum: float = 0.9,  # For SGD
+    dropout: float = 0.2,  # Dropout rate
 ):
     """Train knowledge distillation model on H100 GPU with optimizations."""
     import torch
@@ -156,6 +159,9 @@ def train_on_h100(
         'cutmix_alpha': cutmix_alpha,
         'img_size': img_size,
         'pretrained': pretrained,
+        'optimizer_type': optimizer_type,
+        'momentum': momentum if optimizer_type == 'sgd' else None,
+        'dropout': dropout,
         'timestamp': datetime.now().isoformat(),
     }
     
@@ -198,10 +204,11 @@ def train_on_h100(
         num_classes=10,
         width_mult=width_mult,
         pretrained=pretrained,
-        dropout=0.2
+        dropout=dropout
     ).to(device)
     if pretrained:
         print(f"✓ Using ImageNet pretrained weights")
+    print(f"✓ Dropout: {dropout}")
     
     model_info = get_model_info(student_model)
     print(f"✓ Student model created:")
@@ -292,24 +299,37 @@ def train_on_h100(
     print(f"  Temperature: {temperature}")
     print(f"  Alpha: {alpha}\n")
     
-    # Create optimizer (AdamW has better weight decay handling)
-    optimizer = torch.optim.AdamW(
-        student_model.parameters(),
-        lr=learning_rate,
-        weight_decay=weight_decay
-    )
+    # Create optimizer
+    if optimizer_type == 'sgd':
+        optimizer = torch.optim.SGD(
+            student_model.parameters(),
+            lr=learning_rate,
+            momentum=momentum,
+            weight_decay=weight_decay,
+            nesterov=True
+        )
+        print(f"✓ Optimizer: SGD (momentum={momentum}, nesterov=True)")
+    else:
+        optimizer = torch.optim.AdamW(
+            student_model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay
+        )
+        print(f"✓ Optimizer: AdamW")
     
     # Create scheduler with optional warmup
+    steps_per_epoch = len(train_loader)
     scheduler, warmup_fn = create_scheduler(
         optimizer=optimizer,
         scheduler_type=scheduler_type,
         num_epochs=epochs,
         warmup_epochs=warmup_epochs,
+        steps_per_epoch=steps_per_epoch,
         factor=0.5,
         patience=5,
         min_lr=1e-6
     )
-    print(f"✓ Scheduler: {scheduler_type}" + (f" with {warmup_epochs}-epoch warmup" if warmup_epochs > 0 else ""))
+    print(f"✓ Scheduler: {scheduler_type}" + (f" with {warmup_epochs}-epoch warmup" if warmup_epochs > 0 and scheduler_type != 'onecycle' else ""))
     
     # Create GPU augmentation (faster than CPU augmentation)
     gpu_aug = get_gpu_augmentation(augmentation_strength)
@@ -467,6 +487,9 @@ def main(
     cutmix_alpha: float = 1.0,
     img_size: int = 224,
     pretrained: bool = False,
+    optimizer_type: str = "adamw",
+    momentum: float = 0.9,
+    dropout: float = 0.2,
 ):
     """Main entry point for Modal training."""
     print(f"\n{'='*80}")
@@ -500,6 +523,9 @@ def main(
         cutmix_alpha=cutmix_alpha,
         img_size=img_size,
         pretrained=pretrained,
+        optimizer_type=optimizer_type,
+        momentum=momentum,
+        dropout=dropout,
     )
     
     print("\n" + "="*80)
