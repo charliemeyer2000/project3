@@ -80,7 +80,7 @@ def train_teacher_classifier(
     from tqdm import tqdm
     from sklearn.metrics import f1_score, accuracy_score
     from huggingface_hub import login
-    from transformers import AutoModel, AutoProcessor
+    from transformers import AutoModel, AutoImageProcessor
     import numpy as np
     from collections import Counter
     
@@ -106,14 +106,15 @@ def train_teacher_classifier(
     login(token=HF_TOKEN)
     print("✓ HuggingFace login successful\n")
     
-    # Load teacher model AND processor (correct preprocessing!)
-    print("Loading MedSigLIP teacher model and processor...")
+    # Load teacher model AND image processor (correct preprocessing!)
+    print("Loading MedSigLIP teacher model and image processor...")
     teacher = AutoModel.from_pretrained(
         "google/medsiglip-448",
         trust_remote_code=True,
         token=HF_TOKEN
     ).to(device)
-    processor = AutoProcessor.from_pretrained(
+    # Use AutoImageProcessor (not AutoProcessor) - we only need image preprocessing, not tokenizer
+    image_processor = AutoImageProcessor.from_pretrained(
         "google/medsiglip-448",
         trust_remote_code=True,
         token=HF_TOKEN
@@ -130,17 +131,17 @@ def train_teacher_classifier(
         features = teacher.vision_model(sample).pooler_output
         feature_dim = features.shape[1]
     
-    print(f"✓ Teacher loaded with AutoProcessor:")
+    print(f"✓ Teacher loaded with AutoImageProcessor:")
     print(f"  Model: google/medsiglip-448")
     print(f"  Feature dimension: {feature_dim}")
-    print(f"  Using HuggingFace processor for correct normalization!")
+    print(f"  Using HuggingFace image processor for correct normalization!")
     print()
     
-    # Simple dataset class using HuggingFace processor for correct preprocessing
+    # Simple dataset class using HuggingFace image processor for correct preprocessing
     class SkinDataset(Dataset):
-        def __init__(self, root_dir, processor):
+        def __init__(self, root_dir, image_processor):
             self.root_dir = Path(root_dir)
-            self.processor = processor
+            self.image_processor = image_processor
             self.samples = []
             self.class_names = sorted([d.name for d in self.root_dir.iterdir() if d.is_dir()])
             self.class_to_idx = {c: i for i, c in enumerate(self.class_names)}
@@ -156,13 +157,13 @@ def train_teacher_classifier(
         def __getitem__(self, idx):
             img_path, label = self.samples[idx]
             image = Image.open(img_path).convert('RGB')
-            # Use the HuggingFace processor for correct preprocessing!
-            inputs = self.processor(images=image, return_tensors="pt")
+            # Use the HuggingFace image processor for correct preprocessing!
+            inputs = self.image_processor(images=image, return_tensors="pt")
             pixel_values = inputs['pixel_values'].squeeze(0)  # Remove batch dim
             return pixel_values, label
     
     data_root = "/data/data/training_dataset/train_dataset"
-    full_dataset = SkinDataset(data_root, processor)
+    full_dataset = SkinDataset(data_root, image_processor)
     
     # Split into train/val
     n_total = len(full_dataset)
