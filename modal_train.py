@@ -268,12 +268,29 @@ def train_on_h100(
         teacher_head_path = "/data/teacher_head/medsiglip_classifier.pth"
         if os.path.exists(teacher_head_path):
             checkpoint = torch.load(teacher_head_path, map_location=device)
+            
+            # Check if MLP was used during training
+            use_mlp = checkpoint.get('use_mlp', False)
+            if use_mlp:
+                # Recreate MLP architecture
+                teacher_model.classifier_head = nn.Sequential(
+                    nn.Linear(hidden_dim, 512),
+                    nn.ReLU(),
+                    nn.Dropout(0.3),
+                    nn.Linear(512, 256),
+                    nn.ReLU(),
+                    nn.Dropout(0.3),
+                    nn.Linear(256, 10)
+                ).to(device)
+                print(f"✓ Teacher model loaded WITH TRAINED MLP HEAD:")
+            else:
+                print(f"✓ Teacher model loaded WITH TRAINED LINEAR HEAD:")
+            
             teacher_model.classifier_head.load_state_dict(checkpoint['state_dict'])
-            print(f"✓ Teacher model loaded WITH TRAINED HEAD:")
             print(f"  Model: google/medsiglip-448")
             print(f"  Feature dim: {hidden_dim}")
             print(f"  Trained head F1: {checkpoint['best_f1']:.4f}")
-            print(f"  Classifier: {hidden_dim} -> 10 classes (TRAINED)\n")
+            print(f"  Classifier: {'MLP' if use_mlp else 'Linear'} ({hidden_dim} -> 10 classes)\n")
         else:
             print(f"⚠ WARNING: Trained teacher head not found at {teacher_head_path}")
             print(f"  Run 'modal run train_teacher_head.py' first!")

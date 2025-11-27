@@ -53,12 +53,13 @@ image = (
     secrets=[modal.Secret.from_name("huggingface-secret")],
 )
 def train_teacher_classifier(
-    epochs: int = 50,
+    epochs: int = 100,  # More epochs for better convergence
     batch_size: int = 64,
-    learning_rate: float = 0.01,
+    learning_rate: float = 0.001,  # Lower LR for stability
     weight_decay: float = 0.0001,
     use_class_weights: bool = True,
     train_split: float = 0.9,
+    use_mlp: bool = True,  # Use MLP head instead of linear
 ):
     """Train a linear classifier on MedSigLIP features.
     
@@ -79,7 +80,7 @@ def train_teacher_classifier(
     from tqdm import tqdm
     from sklearn.metrics import f1_score, accuracy_score
     from huggingface_hub import login
-    from transformers import AutoModel
+    from transformers import AutoModel, AutoProcessor
     import numpy as np
     from collections import Counter
     
@@ -105,13 +106,18 @@ def train_teacher_classifier(
     login(token=HF_TOKEN)
     print("✓ HuggingFace login successful\n")
     
-    # Load teacher model
-    print("Loading MedSigLIP teacher model...")
+    # Load teacher model AND processor (correct preprocessing!)
+    print("Loading MedSigLIP teacher model and processor...")
     teacher = AutoModel.from_pretrained(
         "google/medsiglip-448",
         trust_remote_code=True,
         token=HF_TOKEN
     ).to(device)
+    processor = AutoProcessor.from_pretrained(
+        "google/medsiglip-448",
+        trust_remote_code=True,
+        token=HF_TOKEN
+    )
     teacher.eval()
     
     # Freeze all parameters
@@ -124,16 +130,17 @@ def train_teacher_classifier(
         features = teacher.vision_model(sample).pooler_output
         feature_dim = features.shape[1]
     
-    print(f"✓ Teacher loaded:")
+    print(f"✓ Teacher loaded with AutoProcessor:")
     print(f"  Model: google/medsiglip-448")
     print(f"  Feature dimension: {feature_dim}")
+    print(f"  Using HuggingFace processor for correct normalization!")
     print()
     
-    # Simple dataset class
+    # Simple dataset class using HuggingFace processor for correct preprocessing
     class SkinDataset(Dataset):
-        def __init__(self, root_dir, transform=None):
+        def __init__(self, root_dir, processor):
             self.root_dir = Path(root_dir)
-            self.transform = transform
+            self.processor = processor
             self.samples = []
             self.class_names = sorted([d.name for d in self.root_dir.iterdir() if d.is_dir()])
             self.class_to_idx = {c: i for i, c in enumerate(self.class_names)}
@@ -149,19 +156,13 @@ def train_teacher_classifier(
         def __getitem__(self, idx):
             img_path, label = self.samples[idx]
             image = Image.open(img_path).convert('RGB')
-            if self.transform:
-                image = self.transform(image)
-            return image, label
-    
-    # Create dataset with 448x448 images for MedSigLIP
-    transform = transforms.Compose([
-        transforms.Resize((448, 448)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
+            # Use the HuggingFace processor for correct preprocessing!
+            inputs = self.processor(images=image, return_tensors="pt")
+            pixel_values = inputs['pixel_values'].squeeze(0)  # Remove batch dim
+            return pixel_values, label
     
     data_root = "/data/data/training_dataset/train_dataset"
-    full_dataset = SkinDataset(data_root, transform)
+    full_dataset = SkinDataset(data_root, processor)
     
     # Split into train/val
     n_total = len(full_dataset)
@@ -223,9 +224,21 @@ def train_teacher_classifier(
         pin_memory=True
     )
     
-    # Create classifier head
-    classifier = nn.Linear(feature_dim, 10).to(device)
-    print(f"✓ Classifier created: {feature_dim} -> 10")
+    # Create classifier head (MLP for better expressiveness)
+    if use_mlp:
+        classifier = nn.Sequential(
+            nn.Linear(feature_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 10)
+        ).to(device)
+        print(f"✓ MLP Classifier created: {feature_dim} -> 512 -> 256 -> 10")
+    else:
+        classifier = nn.Linear(feature_dim, 10).to(device)
+        print(f"✓ Linear Classifier created: {feature_dim} -> 10")
     
     # Setup training
     criterion = nn.CrossEntropyLoss(weight=class_weights)
@@ -305,6 +318,7 @@ def train_teacher_classifier(
         'num_classes': 10,
         'best_f1': best_f1,
         'class_names': full_dataset.class_names,
+        'use_mlp': use_mlp,
         'trained_at': datetime.now().isoformat()
     }, save_path)
     
@@ -329,16 +343,17 @@ def train_teacher_classifier(
 
 @app.local_entrypoint()
 def main(
-    epochs: int = 50,
+    epochs: int = 100,
     batch_size: int = 64,
-    learning_rate: float = 0.01,
+    learning_rate: float = 0.001,
     weight_decay: float = 0.0001,
     use_class_weights: bool = True,
     train_split: float = 0.9,
+    use_mlp: bool = True,
 ):
     """Train the teacher's classifier head."""
     print(f"\n{'='*80}")
-    print("Training Teacher Classifier Head")
+    print("Training Teacher Classifier Head (with correct preprocessing!)")
     print(f"{'='*80}\n")
     
     result = train_teacher_classifier.remote(
@@ -348,9 +363,11 @@ def main(
         weight_decay=weight_decay,
         use_class_weights=use_class_weights,
         train_split=train_split,
+        use_mlp=use_mlp,
     )
     
     print(f"\n✓ Teacher head trained!")
     print(f"  Best F1: {result['best_f1']:.4f}")
     print(f"  Saved to: {result['save_path']}")
+
 
