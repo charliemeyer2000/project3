@@ -87,8 +87,8 @@ class MobileNetV3Student(nn.Module):
         # Replace classifier
         self.backbone.classifier = nn.Sequential(
             nn.Linear(self.feature_dim, 1280),
-            nn.Hardswish(inplace=True),
-            nn.Dropout(p=dropout, inplace=True) if dropout > 0 else nn.Identity(),
+            nn.Hardswish(inplace=False),
+            nn.Dropout(p=dropout, inplace=False) if dropout > 0 else nn.Identity(),
             nn.Linear(1280, num_classes),
         )
     
@@ -129,6 +129,7 @@ def get_mobilenet_student(variant: str = 'v2',
         return MobileNetV3Student(num_classes, 'large', pretrained, **kwargs)
     else:
         raise ValueError(f"Unknown variant: {variant}")
+
 
 
 

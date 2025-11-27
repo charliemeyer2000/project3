@@ -125,7 +125,7 @@ class CustomShuffleNetStudent(nn.Module):
         if use_attention:
             self.attention = nn.Sequential(
                 nn.Linear(self.feature_dim, self.feature_dim // 4),
-                nn.ReLU(inplace=True),
+                nn.ReLU(inplace=False),
                 nn.Linear(self.feature_dim // 4, self.feature_dim),
                 nn.Sigmoid()
             )
@@ -210,6 +210,7 @@ def get_shufflenet_student(variant: str = 'base',
         return CustomShuffleNetStudent(num_classes, width_mult, pretrained, **kwargs)
     else:
         raise ValueError(f"Unknown variant: {variant}")
+
 
 
 

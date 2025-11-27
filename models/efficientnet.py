@@ -34,7 +34,7 @@ class EfficientNetB0Student(nn.Module):
         
         # Replace classifier
         self.backbone.classifier = nn.Sequential(
-            nn.Dropout(p=dropout, inplace=True),
+            nn.Dropout(p=dropout, inplace=False),
             nn.Linear(self.feature_dim, num_classes)
         )
     
