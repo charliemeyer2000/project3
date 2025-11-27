@@ -394,28 +394,73 @@ class Trainer:
             
             if self.use_amp:
                 with autocast('cuda', dtype=torch.float16):
-                    # Get student predictions
-                    student_logits = self.student(images)
+                    # Get student predictions (and features if using feature distillation)
+                    student_features = None
+                    if self.use_feature_distillation:
+                        student_out = self.student(images, return_features=True)
+                        if isinstance(student_out, tuple) and len(student_out) == 2:
+                            student_logits, student_features = student_out
+                            if self.feature_projector is not None:
+                                student_features = self.feature_projector(student_features)
+                        else:
+                            student_logits = student_out
+                    else:
+                        student_logits = self.student(images)
+                    
                     if isinstance(student_logits, tuple):
                         student_logits = student_logits[0]
                     
                     # Get teacher predictions for loss computation
-                    teacher_logits = self.teacher(images)
-                    if isinstance(teacher_logits, tuple):
-                        teacher_logits = teacher_logits[0]
+                    teacher_features = None
+                    teacher_out = self.teacher(images)
+                    if isinstance(teacher_out, tuple):
+                        teacher_logits, teacher_features = teacher_out
+                    else:
+                        teacher_logits = teacher_out
                     
-                    # Compute loss
-                    loss, _ = self.distillation_loss(student_logits, teacher_logits, labels_dev)
+                    # Compute loss (with features if using hybrid loss)
+                    if self.use_feature_distillation and student_features is not None:
+                        loss, _ = self.distillation_loss(
+                            student_logits, teacher_logits,
+                            student_features, teacher_features,
+                            labels_dev
+                        )
+                    else:
+                        loss, _ = self.distillation_loss(student_logits, teacher_logits, labels_dev)
             else:
-                student_logits = self.student(images)
+                # Get student predictions (and features if using feature distillation)
+                student_features = None
+                if self.use_feature_distillation:
+                    student_out = self.student(images, return_features=True)
+                    if isinstance(student_out, tuple) and len(student_out) == 2:
+                        student_logits, student_features = student_out
+                        if self.feature_projector is not None:
+                            student_features = self.feature_projector(student_features)
+                    else:
+                        student_logits = student_out
+                else:
+                    student_logits = self.student(images)
+                
                 if isinstance(student_logits, tuple):
                     student_logits = student_logits[0]
                 
-                teacher_logits = self.teacher(images)
-                if isinstance(teacher_logits, tuple):
-                    teacher_logits = teacher_logits[0]
+                # Get teacher predictions
+                teacher_features = None
+                teacher_out = self.teacher(images)
+                if isinstance(teacher_out, tuple):
+                    teacher_logits, teacher_features = teacher_out
+                else:
+                    teacher_logits = teacher_out
                 
-                loss, _ = self.distillation_loss(student_logits, teacher_logits, labels_dev)
+                # Compute loss (with features if using hybrid loss)
+                if self.use_feature_distillation and student_features is not None:
+                    loss, _ = self.distillation_loss(
+                        student_logits, teacher_logits,
+                        student_features, teacher_features,
+                        labels_dev
+                    )
+                else:
+                    loss, _ = self.distillation_loss(student_logits, teacher_logits, labels_dev)
             
             total_loss += loss.item()
             num_batches += 1
