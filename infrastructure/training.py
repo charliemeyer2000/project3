@@ -272,14 +272,20 @@ class Trainer:
             
             if self.use_amp:
                 with autocast('cuda', dtype=torch.float16):
-                    # Get student predictions (and features if needed)
+                    # Get student predictions (and features if needed) in single pass
                     student_features = None
-                    if self.use_feature_distillation and hasattr(self.student, 'get_features'):
-                        student_features = self.student.get_features(images)
-                        if self.feature_projector is not None:
-                            student_features = self.feature_projector(student_features)
+                    if self.use_feature_distillation:
+                        # Single forward pass returning both logits and features
+                        student_out = self.student(images, return_features=True)
+                        if isinstance(student_out, tuple) and len(student_out) == 2:
+                            student_logits, student_features = student_out
+                            if self.feature_projector is not None:
+                                student_features = self.feature_projector(student_features)
+                        else:
+                            student_logits = student_out
+                    else:
+                        student_logits = self.student(images)
                     
-                    student_logits = self.student(images)
                     if isinstance(student_logits, tuple):
                         student_logits = student_logits[0]
                     
@@ -309,12 +315,18 @@ class Trainer:
             else:
                 # Standard FP32 training
                 student_features = None
-                if self.use_feature_distillation and hasattr(self.student, 'get_features'):
-                    student_features = self.student.get_features(images)
-                    if self.feature_projector is not None:
-                        student_features = self.feature_projector(student_features)
+                if self.use_feature_distillation:
+                    # Single forward pass returning both logits and features
+                    student_out = self.student(images, return_features=True)
+                    if isinstance(student_out, tuple) and len(student_out) == 2:
+                        student_logits, student_features = student_out
+                        if self.feature_projector is not None:
+                            student_features = self.feature_projector(student_features)
+                    else:
+                        student_logits = student_out
+                else:
+                    student_logits = self.student(images)
                 
-                student_logits = self.student(images)
                 if isinstance(student_logits, tuple):
                     student_logits = student_logits[0]
                 

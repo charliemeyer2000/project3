@@ -37,19 +37,30 @@ class MobileNetV2Student(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_features: bool = False):
         """Forward pass.
         
         Args:
             x: Input images [B, 3, 224, 224]
+            return_features: If True, return (logits, features) tuple
             
         Returns:
-            Logits [B, num_classes]
+            Logits [B, num_classes] or (logits, features) if return_features=True
         """
-        return self.backbone(x)
+        # Single pass through backbone
+        features = self.backbone.features(x)
+        features = nn.functional.adaptive_avg_pool2d(features, (1, 1))
+        features = torch.flatten(features, 1)
+        
+        # Pass through classifier
+        logits = self.backbone.classifier(features)
+        
+        if return_features:
+            return logits, features
+        return logits
     
     def get_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract features before classification."""
+        """Extract features before classification (deprecated, use forward with return_features=True)."""
         x = self.backbone.features(x)
         x = nn.functional.adaptive_avg_pool2d(x, (1, 1))
         x = torch.flatten(x, 1)
@@ -92,12 +103,27 @@ class MobileNetV3Student(nn.Module):
             nn.Linear(1280, num_classes),
         )
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass."""
-        return self.backbone(x)
+    def forward(self, x: torch.Tensor, return_features: bool = False):
+        """Forward pass.
+        
+        Args:
+            x: Input images
+            return_features: If True, return (logits, features) tuple
+        """
+        # Single pass through backbone
+        features = self.backbone.features(x)
+        features = self.backbone.avgpool(features)
+        features = torch.flatten(features, 1)
+        
+        # Pass through classifier
+        logits = self.backbone.classifier(features)
+        
+        if return_features:
+            return logits, features
+        return logits
     
     def get_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract features before classification."""
+        """Extract features before classification (deprecated, use forward with return_features=True)."""
         x = self.backbone.features(x)
         x = self.backbone.avgpool(x)
         x = torch.flatten(x, 1)

@@ -45,29 +45,34 @@ class ShuffleNetStudent(nn.Module):
             nn.Linear(self.feature_dim, num_classes)
         )
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_features: bool = False):
         """Forward pass.
         
         Args:
             x: Input images [B, 3, 224, 224]
+            return_features: If True, return (logits, features) tuple
             
         Returns:
-            Logits [B, num_classes]
-        """
-        return self.backbone(x)
-    
-    def get_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract features before final classification layer.
-        
-        Useful for feature-based distillation.
-        
-        Args:
-            x: Input images [B, 3, 224, 224]
-            
-        Returns:
-            Features [B, feature_dim]
+            Logits [B, num_classes] or (logits, features) if return_features=True
         """
         # ShuffleNetV2 structure: conv1 -> maxpool -> stage2 -> stage3 -> stage4 -> conv5
+        features = self.backbone.conv1(x)
+        features = self.backbone.maxpool(features)
+        features = self.backbone.stage2(features)
+        features = self.backbone.stage3(features)
+        features = self.backbone.stage4(features)
+        features = self.backbone.conv5(features)
+        features = features.mean([2, 3])  # Global average pooling
+        
+        # Pass through classifier
+        logits = self.backbone.fc(features)
+        
+        if return_features:
+            return logits, features
+        return logits
+    
+    def get_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Extract features before final classification layer (deprecated, use forward with return_features=True)."""
         x = self.backbone.conv1(x)
         x = self.backbone.maxpool(x)
         x = self.backbone.stage2(x)
