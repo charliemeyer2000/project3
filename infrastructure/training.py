@@ -709,7 +709,7 @@ def train_with_distillation(
 
 
 def save_torchscript(model: nn.Module, output_path: str) -> int:
-    """Save model as TorchScript.
+    """Save model as TorchScript using tracing.
     
     Args:
         model: PyTorch model
@@ -721,9 +721,10 @@ def save_torchscript(model: nn.Module, output_path: str) -> int:
     model.eval()
     model.cpu()
     
-    # Script the model
-    scripted_model = torch.jit.script(model)
-    scripted_model.save(output_path)
+    # Use trace instead of script (handles conditional return types)
+    dummy_input = torch.randn(1, 3, 224, 224)
+    traced_model = torch.jit.trace(model, dummy_input)
+    traced_model.save(output_path)
     
     # Get file size
     file_size = Path(output_path).stat().st_size
