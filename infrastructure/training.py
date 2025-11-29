@@ -74,11 +74,11 @@ def create_scheduler(optimizer: torch.optim.Optimizer,
     elif scheduler_type == 'onecycle':
         # OneCycleLR - very effective, includes built-in warmup
         max_lr = optimizer.param_groups[0]['lr']
+        total_steps = num_epochs * steps_per_epoch
         scheduler = OneCycleLR(
             optimizer,
             max_lr=max_lr,
-            epochs=num_epochs,
-            steps_per_epoch=steps_per_epoch,
+            total_steps=total_steps,
             pct_start=0.3,  # 30% warmup
             anneal_strategy='cos',
             div_factor=25.0,  # initial_lr = max_lr / 25
