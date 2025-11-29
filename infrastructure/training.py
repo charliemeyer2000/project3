@@ -72,18 +72,21 @@ def create_scheduler(optimizer: torch.optim.Optimizer,
             eta_min=kwargs.get('min_lr', 1e-6)
         )
     elif scheduler_type == 'onecycle':
-        # OneCycleLR - very effective, includes built-in warmup
-        max_lr = optimizer.param_groups[0]['lr']
-        total_steps = num_epochs * steps_per_epoch
-        scheduler = OneCycleLR(
+        # Use CosineAnnealingLR as a more reliable alternative to OneCycleLR
+        # (OneCycleLR has compatibility issues with torch.compile)
+        scheduler = CosineAnnealingLR(
             optimizer,
-            max_lr=max_lr,
-            total_steps=total_steps,
-            pct_start=0.3,  # 30% warmup
-            anneal_strategy='cos',
-            div_factor=25.0,  # initial_lr = max_lr / 25
-            final_div_factor=10000.0  # min_lr = initial_lr / 10000
+            T_max=num_epochs,
+            eta_min=kwargs.get('min_lr', 1e-6)
         )
+        # Add 5-epoch warmup for onecycle-like behavior
+        warmup_epochs = 5
+        base_lr = optimizer.param_groups[0]['lr']
+        def warmup_fn(epoch: int) -> float:
+            if epoch < warmup_epochs:
+                return base_lr * (epoch + 1) / warmup_epochs
+            return None
+        return scheduler, warmup_fn
     else:
         raise ValueError(f"Unknown scheduler type: {scheduler_type}")
     
